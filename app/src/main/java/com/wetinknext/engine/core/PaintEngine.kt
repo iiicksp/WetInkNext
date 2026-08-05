@@ -15,7 +15,8 @@ class PaintEngine {
         require(width > 0 && height > 0)
         release()
         canvasWidth = width; canvasHeight = height
-        canvasTarget.create(width, height, caps.supportsHalfFloatColorBuffer)
+        val useHalfFloat = caps.supportsHalfFloatColorBuffer && canvasTarget.probeHalfFloatColorBuffer()
+        canvasTarget.create(width, height, useHalfFloat)
         initialized = true
     }
 
