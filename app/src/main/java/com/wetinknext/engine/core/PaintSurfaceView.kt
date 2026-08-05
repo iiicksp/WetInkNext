@@ -3,6 +3,7 @@ package com.wetinknext.engine.core
 import android.content.Context
 import android.opengl.GLSurfaceView
 import android.util.AttributeSet
+import android.view.MotionEvent
 
 class PaintSurfaceView @JvmOverloads constructor(
     context: Context,
@@ -15,6 +16,9 @@ class PaintSurfaceView @JvmOverloads constructor(
         setRenderer(engineRenderer)
         renderMode = RENDERMODE_CONTINUOUSLY
     }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean =
+        engineRenderer.onTouchEvent(event) || super.onTouchEvent(event)
 
     override fun onPause() {
         engineRenderer.cancelActiveStroke()
