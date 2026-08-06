@@ -6,7 +6,8 @@ import java.nio.ByteOrder
 
 /** A document-sized quad; GL resources are owned by the render thread. */
 class CanvasGeometry {
-    private var vaoId = 0
+    var vaoId = 0
+        private set
     private var vboId = 0
 
     fun create(width: Int, height: Int) {

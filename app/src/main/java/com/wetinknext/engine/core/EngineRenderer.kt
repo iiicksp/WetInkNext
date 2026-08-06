@@ -8,121 +8,282 @@ import com.wetinknext.engine.brush.ColorSpaces
 import com.wetinknext.engine.brush.DabBuffer
 import com.wetinknext.engine.brush.DabRenderer
 import com.wetinknext.engine.brush.StampEmitter
+import com.wetinknext.engine.canvas.Compositor
+import com.wetinknext.engine.canvas.LayerStack
 import com.wetinknext.engine.gl.CanvasGeometry
 import com.wetinknext.engine.gl.GlCaps
 import com.wetinknext.engine.gl.GlCheck
-import com.wetinknext.engine.gl.GlProgram
-import com.wetinknext.engine.gl.ShaderLib
 import com.wetinknext.engine.gl.RenderTarget
-import javax.microedition.khronos.egl.EGLConfig
-import javax.microedition.khronos.opengles.GL10
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.atomic.AtomicBoolean
 import com.wetinknext.engine.input.InputAction
 import com.wetinknext.engine.input.InputBatch
 import com.wetinknext.engine.input.InputBatchPool
 import com.wetinknext.engine.input.StrokeInputCapturer
+import com.wetinknext.engine.undo.TileSnapshotCapture
+import com.wetinknext.engine.undo.TileSnapshotRestore
+import com.wetinknext.engine.undo.UndoEntry
+import com.wetinknext.engine.undo.UndoManager
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.atomic.AtomicBoolean
+import javax.microedition.khronos.egl.EGLConfig
+import javax.microedition.khronos.opengles.GL10
 
+/**
+ * The P6 render-thread owner. Active dabs are accumulated only in strokeTarget;
+ * UP snapshots and merges them into the selected PaintLayer atomically.
+ */
 class EngineRenderer(
     private val documentWidth: Int = DEFAULT_CANVAS_WIDTH,
     private val documentHeight: Int = DEFAULT_CANVAS_HEIGHT,
 ) : GLSurfaceView.Renderer {
-    private val paintEngine = PaintEngine()
     private var caps: GlCaps? = null
-    private var presentProgram: GlProgram? = null
+    private val layerStack = LayerStack()
+    private val undoManager = UndoManager()
+
     private var geometry: CanvasGeometry? = null
+    private var compositor: Compositor? = null
+    private var dabRenderer: DabRenderer? = null
+    private val strokeTarget = RenderTarget()
+    private val canvasToFboMatrix = FloatArray(16)
+    private val canvasToClipMatrix = FloatArray(16)
+
     private var screenWidth = 1
     private var screenHeight = 1
-    private var uTexture = -1
-    private var uCanvasToClip = -1
-    private var uCanvasSize = -1
-    private val presentMatrix = FloatArray(16)
-    private val canvasToFboMatrix = FloatArray(16)
-    private val inputPool = InputBatchPool(64, 256)
+
+    private val inputPool = InputBatchPool(batchCount = 64, maxSamplesPerBatch = 256)
     private val inputQueue = ArrayBlockingQueue<InputBatch>(64)
-    private val inputCapturer = StrokeInputCapturer(paintEngine.camera, inputPool, inputQueue)
-    private val dabBuffer = DabBuffer()
-    private val defaultBrush = BrushSettings(name="Round Opaque", baseRadiusPx=16f, spacing=.12f, colorArgb=0xFF1B1F24L, smoothing=.25f, streamline=.05f, pressureToOpacity=false, pressureGamma=1.1f, minSizeRatio=.12f)
+    private val inputCapturer = StrokeInputCapturer(layerStack.camera, inputPool, inputQueue)
+
+    private val defaultBrush = BrushSettings(
+        name = "Round Opaque",
+        baseRadiusPx = 16f,
+        spacing = 0.12f,
+        colorArgb = 0xFF1B1F24L,
+        smoothing = 0.25f,
+        streamline = 0.05f,
+        pressureToOpacity = false,
+        pressureGamma = 1.1f,
+        minSizeRatio = 0.12f,
+    )
     private val stampEmitter = StampEmitter(defaultBrush)
-    private val strokeTarget = RenderTarget()
-    private val strokeColor = FloatArray(3)
-    private var dabRenderer: DabRenderer? = null
+    private val dabBuffer = DabBuffer()
+    private val strokeColorLinear = FloatArray(3)
+    private val strokeDirtyRect = DirtyRect()
+    private val dirtyBounds = IntArray(4)
+
     private var strokeActive = false
-    private var previewVisible = false
     private val cancelRequested = AtomicBoolean(false)
 
     fun onTouchEvent(event: MotionEvent): Boolean = inputCapturer.onTouchEvent(event)
 
+    /** These methods are called from GLSurfaceView.queueEvent by the UI layer. */
+    fun undo() {
+        resetStroke()
+        val entry = undoManager.popUndo() ?: return
+        val layer = layerStack.findLayerById(entry.layerId) ?: return
+        TileSnapshotRestore.restore(layer.target, entry.beforeTiles)
+        layer.version++
+    }
+
+    fun redo() {
+        resetStroke()
+        val entry = undoManager.popRedo() ?: return
+        val layer = layerStack.findLayerById(entry.layerId) ?: return
+        TileSnapshotRestore.restore(layer.target, entry.afterTiles)
+        layer.version++
+    }
+
+    fun setActiveLayer(id: Long): Boolean {
+        resetStroke()
+        return layerStack.setActive(id)
+    }
+
+    fun addLayer(name: String): Long {
+        resetStroke()
+        return layerStack.addLayer(name).id
+    }
+
+    fun removeLayer(id: Long): Boolean {
+        resetStroke()
+        return layerStack.removeLayer(id) != null
+    }
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         releaseGlObjects()
-        val nextCaps = GlCaps.query(); caps = nextCaps
-        presentProgram = GlProgram(ShaderLib.canvasPresentVertex, ShaderLib.strokeCompositeFragment)
-        paintEngine.create(nextCaps, documentWidth, documentHeight)
-        paintEngine.clearCanvas()
+        val nextCaps = GlCaps.query()
+        caps = nextCaps
+        layerStack.create(nextCaps, documentWidth, documentHeight)
         strokeTarget.create(documentWidth, documentHeight, nextCaps.supportsHalfFloatColorBuffer)
-        strokeTarget.clear(0f,0f,0f,0f)
-        ViewTransform.buildCanvasToFbo(documentWidth.toFloat(), documentHeight.toFloat(), canvasToFboMatrix)
+        strokeTarget.clear(0f, 0f, 0f, 0f)
+        ViewTransform.buildCanvasToFbo(
+            documentWidth.toFloat(),
+            documentHeight.toFloat(),
+            canvasToFboMatrix,
+        )
         geometry = CanvasGeometry().also { it.create(documentWidth, documentHeight) }
+        compositor = Compositor().also { it.create() }
         dabRenderer = DabRenderer(dabBuffer.capacity).also { it.create() }
-        presentProgram!!.use()
-        uTexture = GLES30.glGetUniformLocation(presentProgram!!.id, "uCanvasTex")
-        uCanvasToClip = GLES30.glGetUniformLocation(presentProgram!!.id, "uCanvasToClip")
-        uCanvasSize = GLES30.glGetUniformLocation(presentProgram!!.id, "uCanvasSize")
-        check(uTexture >= 0 && uCanvasToClip >= 0 && uCanvasSize >= 0) { "P3 present shader uniforms missing" }
-        GlCheck.noError("P3 surface creation")
+        ColorSpaces.srgb8ToLinear(defaultBrush.colorArgb, strokeColorLinear)
+        GlCheck.noError("P6 surface creation")
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
-        screenWidth = width.coerceAtLeast(1); screenHeight = height.coerceAtLeast(1)
+        screenWidth = width.coerceAtLeast(1)
+        screenHeight = height.coerceAtLeast(1)
         GLES30.glViewport(0, 0, screenWidth, screenHeight)
-        paintEngine.camera.fitCanvas(paintEngine.canvasWidth, paintEngine.canvasHeight, screenWidth, screenHeight)
-        GlCheck.noError("P3 surface changed")
+        layerStack.camera.fitCanvas(layerStack.canvasWidth, layerStack.canvasHeight, screenWidth, screenHeight)
+        GlCheck.noError("P6 surface changed")
     }
 
     override fun onDrawFrame(gl: GL10?) {
         if (cancelRequested.compareAndSet(true, false)) resetStroke()
         drainInput()
-        if(strokeActive && dabBuffer.count>0){strokeTarget.clear(0f,0f,0f,0f);dabRenderer?.drawInto(strokeTarget,paintEngine.canvasWidth,paintEngine.canvasHeight,canvasToFboMatrix,dabBuffer,strokeColor)}
+
+        if (strokeActive && dabBuffer.count > 0) {
+            strokeTarget.clear(0f, 0f, 0f, 0f)
+            dabRenderer?.drawInto(
+                target = strokeTarget,
+                width = layerStack.canvasWidth,
+                height = layerStack.canvasHeight,
+                canvasToFbo = canvasToFboMatrix,
+                dabs = dabBuffer,
+                colorLinear = strokeColorLinear,
+            )
+        }
+
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glViewport(0, 0, screenWidth, screenHeight)
-        GLES30.glDisable(GLES30.GL_BLEND); GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
-        GLES30.glClearColor(0.08f, 0.09f, 0.12f, 1f); GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        val program = presentProgram ?: return
-        program.use()
-        paintEngine.camera.snapshot().buildCanvasToClip(screenWidth.toFloat(), screenHeight.toFloat(), presentMatrix)
-        GLES30.glUniformMatrix4fv(uCanvasToClip, 1, false, presentMatrix, 0)
-        GLES30.glUniform2f(uCanvasSize, paintEngine.canvasWidth.toFloat(), paintEngine.canvasHeight.toFloat())
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE0); GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, paintEngine.canvasTarget.textureId)
-        GLES30.glUniform1i(uTexture, 0)
-        val strokeTex=GLES30.glGetUniformLocation(program.id,"uStrokeTex");val strokeActiveUniform=GLES30.glGetUniformLocation(program.id,"uStrokeActive")
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE1);GLES30.glBindTexture(GLES30.GL_TEXTURE_2D,strokeTarget.textureId);GLES30.glUniform1i(strokeTex,1);GLES30.glUniform1i(strokeActiveUniform,if(strokeActive)1 else 0);geometry?.draw();GLES30.glBindTexture(GLES30.GL_TEXTURE_2D,0);GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+        GLES30.glDisable(GLES30.GL_BLEND)
+        GLES30.glClearColor(0.08f, 0.09f, 0.12f, 1f)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+
+        layerStack.camera.snapshot().buildCanvasToClip(
+            screenWidth.toFloat(),
+            screenHeight.toFloat(),
+            canvasToClipMatrix,
+        )
+        compositor?.render(
+            geometry = geometry ?: return,
+            layers = layerStack,
+            activeLayerId = layerStack.activeLayerId,
+            strokeTextureId = if (strokeActive && dabBuffer.count > 0) strokeTarget.textureId else 0,
+            canvasToClip = canvasToClipMatrix,
+        )
     }
 
-    fun cancelActiveStroke() { cancelRequested.set(true) }
+    /** Safe to call from the UI thread; cancellation is executed on the next GL frame. */
+    fun cancelActiveStroke() {
+        cancelRequested.set(true)
+    }
+
+    /** Must run on the GL thread while the context is still current. */
     fun releaseGlObjects() {
-        drainInput(); resetStroke()
-        dabRenderer?.release(); dabRenderer = null
+        discardPendingInput()
+        strokeActive = false
+        stampEmitter.reset()
+        dabBuffer.clear()
+        undoManager.clear()
+        dabRenderer?.release()
+        dabRenderer = null
+        compositor?.release()
+        compositor = null
+        geometry?.release()
+        geometry = null
         strokeTarget.release()
-        geometry?.release(); geometry = null
-        presentProgram?.release(); presentProgram = null
-        paintEngine.release(); caps = null
-        uTexture = -1; uCanvasToClip = -1; uCanvasSize = -1
+        layerStack.release()
+        caps = null
     }
 
     private fun drainInput() {
         while (true) {
             val batch = inputQueue.poll() ?: return
-            when (batch.action) {
-                InputAction.DOWN -> if (!batch.isEmpty()) { resetStroke(); strokeActive = true; previewVisible = true; ColorSpaces.srgb8ToLinear(defaultBrush.colorArgb,strokeColor); stampEmitter.begin(batch, dabBuffer) }
-                InputAction.MOVE -> if (strokeActive) stampEmitter.append(batch, dabBuffer)
-                InputAction.UP -> if (strokeActive) { stampEmitter.finish(dabBuffer, false); dabRenderer?.drawInto(paintEngine.canvasTarget,paintEngine.canvasWidth,paintEngine.canvasHeight,canvasToFboMatrix,dabBuffer,strokeColor); dabBuffer.clear(); strokeActive = false }
-                InputAction.CANCEL -> resetStroke()
+            try {
+                when (batch.action) {
+                    InputAction.DOWN -> {
+                        if (!batch.isEmpty()) {
+                            resetStroke()
+                            strokeActive = true
+                            ColorSpaces.srgb8ToLinear(defaultBrush.colorArgb, strokeColorLinear)
+                            stampEmitter.begin(batch, dabBuffer)
+                        }
+                    }
+
+                    InputAction.MOVE -> if (strokeActive) {
+                        stampEmitter.append(batch, dabBuffer)
+                    }
+
+                    InputAction.UP -> if (strokeActive) {
+                        stampEmitter.finish(dabBuffer, cancel = false)
+                        commitStroke()
+                        resetStroke()
+                    }
+
+                    InputAction.CANCEL -> resetStroke()
+                }
+            } finally {
+                inputPool.release(batch)
             }
+        }
+    }
+
+    private fun commitStroke() {
+        val layer = layerStack.activeLayer() ?: return
+        if (layer.isLocked || dabBuffer.count == 0) return
+        if (!computeDirtyPixelBounds(dirtyBounds)) return
+        val renderer = dabRenderer ?: return
+
+        // Both snapshots use the actual layer format (RGBA8 or RGBA16F).
+        val beforeTiles = TileSnapshotCapture.capture(layer.target, dirtyBounds)
+        renderer.drawInto(
+            target = layer.target,
+            width = layerStack.canvasWidth,
+            height = layerStack.canvasHeight,
+            canvasToFbo = canvasToFboMatrix,
+            dabs = dabBuffer,
+            colorLinear = strokeColorLinear,
+        )
+        layer.version++
+        val afterTiles = TileSnapshotCapture.capture(layer.target, dirtyBounds)
+        undoManager.push(UndoEntry(layer.id, beforeTiles, afterTiles))
+    }
+
+    /** Returns a clamped pixel region covering the exact emitted dabs and their AA fringe. */
+    private fun computeDirtyPixelBounds(out: IntArray): Boolean {
+        if (dabBuffer.count == 0) return false
+        strokeDirtyRect.clear()
+        for (index in 0 until dabBuffer.count) {
+            val offset = index * DabBuffer.FLOATS_PER_DAB
+            val x = dabBuffer.floats.get(offset)
+            val y = dabBuffer.floats.get(offset + 1)
+            val radius = dabBuffer.floats.get(offset + 2)
+            strokeDirtyRect.include(x, y, radius)
+        }
+        strokeDirtyRect.expand(AA_MARGIN_PX)
+        strokeDirtyRect.clamp(layerStack.canvasWidth.toFloat(), layerStack.canvasHeight.toFloat())
+        strokeDirtyRect.toPixelBounds(out)
+        return out[2] > out[0] && out[3] > out[1]
+    }
+
+    private fun resetStroke() {
+        strokeActive = false
+        stampEmitter.reset()
+        dabBuffer.clear()
+        if (strokeTarget.framebufferId != 0) {
+            strokeTarget.clear(0f, 0f, 0f, 0f)
+        }
+    }
+
+    /** Releases pooled batches without interpreting them during shutdown/context recreation. */
+    private fun discardPendingInput() {
+        while (true) {
+            val batch = inputQueue.poll() ?: return
             inputPool.release(batch)
         }
     }
 
-    private fun resetStroke() { strokeActive = false; previewVisible = false; stampEmitter.reset(); dabBuffer.clear() }
-
-    companion object { const val DEFAULT_CANVAS_WIDTH = 1500; const val DEFAULT_CANVAS_HEIGHT = 2000 }
+    companion object {
+        const val DEFAULT_CANVAS_WIDTH = 1500
+        const val DEFAULT_CANVAS_HEIGHT = 2000
+        private const val AA_MARGIN_PX = 2f
+    }
 }

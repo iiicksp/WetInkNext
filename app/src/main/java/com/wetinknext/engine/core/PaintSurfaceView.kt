@@ -20,6 +20,15 @@ class PaintSurfaceView @JvmOverloads constructor(
     override fun onTouchEvent(event: MotionEvent): Boolean =
         engineRenderer.onTouchEvent(event) || super.onTouchEvent(event)
 
+    /** P6 command entry points; they intentionally add no visual UI controls yet. */
+    fun undo() {
+        queueEvent { engineRenderer.undo() }
+    }
+
+    fun redo() {
+        queueEvent { engineRenderer.redo() }
+    }
+
     override fun onPause() {
         engineRenderer.cancelActiveStroke()
         super.onPause()

@@ -1,6 +1,41 @@
 package com.wetinknext.engine.gl
 
 object ShaderLib {
+    const val compositorVertex="""#version 300 es
+        layout(location=0) in vec2 aPosition;uniform mat4 uCanvasToClip;uniform vec2 uCanvasSize;out vec2 vUv;void main(){vUv=aPosition/uCanvasSize;gl_Position=uCanvasToClip*vec4(aPosition,0.,1.);}"""
+    const val compositorFragment = """#version 300 es
+        precision highp float;
+
+        in vec2 vUv;
+        uniform sampler2D uLayerTex;
+        uniform sampler2D uStrokeTex;
+        uniform int uStrokeActive;
+        uniform float uOpacity;
+
+        out vec4 fragColor;
+
+        vec3 linearToSrgb(vec3 color) {
+            vec3 c = clamp(color, 0.0, 1.0);
+            vec3 low = c * 12.92;
+            vec3 high = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
+            return mix(low, high, step(vec3(0.0031308), c));
+        }
+
+        vec3 unpremultiply(vec4 color) {
+            return color.a <= 0.0001 ? vec3(0.0) : color.rgb / color.a;
+        }
+
+        void main() {
+            vec4 layer = texture(uLayerTex, vUv);
+            if (uStrokeActive == 1) {
+                vec4 stroke = texture(uStrokeTex, vUv);
+                layer = stroke + layer * (1.0 - stroke.a);
+            }
+
+            float alpha = layer.a * uOpacity;
+            fragColor = vec4(linearToSrgb(unpremultiply(layer)) * alpha, alpha);
+        }
+    """
     const val dabVertex = """#version 300 es
         layout(location = 0) in vec2 aCorner;
         layout(location = 1) in vec4 iDab0;

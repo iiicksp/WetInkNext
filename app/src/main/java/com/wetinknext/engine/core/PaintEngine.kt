@@ -1,35 +1,33 @@
 package com.wetinknext.engine.core
 
+import com.wetinknext.engine.canvas.LayerStack
 import com.wetinknext.engine.gl.GlCaps
 import com.wetinknext.engine.gl.RenderTarget
 
-/** Document state that is exclusively owned by the GLSurfaceView render thread. */
+/** Lightweight document facade retained for engine callers outside the renderer. */
 class PaintEngine {
-    val camera = Camera()
-    val canvasTarget = RenderTarget()
-    var canvasWidth = 1; private set
-    var canvasHeight = 1; private set
-    var initialized = false; private set
+    val layerStack = LayerStack()
+    val camera: Camera get() = layerStack.camera
+    val canvasTarget: RenderTarget get() = checkNotNull(layerStack.activeLayer()).target
+
+    val canvasWidth: Int get() = layerStack.canvasWidth
+    val canvasHeight: Int get() = layerStack.canvasHeight
+    var initialized = false
+        private set
 
     fun create(caps: GlCaps, width: Int, height: Int) {
-        require(width > 0 && height > 0)
-        release()
-        canvasWidth = width; canvasHeight = height
-        val useHalfFloat = caps.supportsHalfFloatColorBuffer && canvasTarget.probeHalfFloatColorBuffer()
-        canvasTarget.create(width, height, useHalfFloat)
+        layerStack.create(caps, width, height)
         initialized = true
     }
 
-    fun resize(caps: GlCaps, width: Int, height: Int) {
-        if (!initialized || canvasWidth != width || canvasHeight != height) create(caps, width, height)
-    }
+    fun addLayer(name: String): Long = layerStack.addLayer(name).id
 
-    fun clearCanvas() {
-        check(initialized)
-        canvasTarget.clear(1f, 1f, 1f, 1f)
-    }
+    fun removeLayer(id: Long): Boolean = layerStack.removeLayer(id) != null
+
+    fun setActiveLayer(id: Long): Boolean = layerStack.setActive(id)
 
     fun release() {
-        canvasTarget.release(); initialized = false; canvasWidth = 1; canvasHeight = 1
+        layerStack.release()
+        initialized = false
     }
 }
