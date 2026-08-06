@@ -80,5 +80,10 @@ data class ViewTransform(
     companion object {
         const val MIN_SCALE = 0.02f
         const val MAX_SCALE = 64f
+
+        fun buildCanvasToFbo(canvasWidth: Float, canvasHeight: Float, out: FloatArray) {
+            require(out.size >= 16); require(canvasWidth > 0f); require(canvasHeight > 0f)
+            out[0]=2f/canvasWidth;out[1]=0f;out[2]=0f;out[3]=0f;out[4]=0f;out[5]=2f/canvasHeight;out[6]=0f;out[7]=0f;out[8]=0f;out[9]=0f;out[10]=1f;out[11]=0f;out[12]=-1f;out[13]=-1f;out[14]=0f;out[15]=1f
+        }
     }
 }
