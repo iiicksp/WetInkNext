@@ -76,7 +76,7 @@ fun EditorScreen() {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text("WetInk Next", color = palette.textPrimary, fontSize = 16.sp)
-            Text("P0: app boots, surface attached", color = palette.textSecondary, fontSize = 12.sp)
+            Text("P6: layers, compositor, undo/redo", color = palette.textSecondary, fontSize = 12.sp)
         }
     }
 }
