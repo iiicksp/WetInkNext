@@ -4,7 +4,14 @@ import com.wetinknext.engine.input.InputBatch
 import kotlin.math.pow
 import kotlin.math.sqrt
 
-class StampEmitter(private val settings: BrushSettings) {
+class StampEmitter(initialSettings: BrushSettings) {
+    var settings: BrushSettings = initialSettings
+        private set
+
+    fun updateSettings(newSettings: BrushSettings) {
+        settings = newSettings
+    }
+
     private val stabilizer = Stabilizer(); private var active = false; private var pointerId = -1; private var hasLast = false
     private var lastX = 0f; private var lastY = 0f; private var lastPressure = 0f; private var carried = 0f; private var spacingPx = 1f
     fun reset() { active = false; pointerId = -1; hasLast = false; carried = 0f; stabilizer.reset() }

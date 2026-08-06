@@ -53,7 +53,7 @@ class EngineRenderer(
     private val inputQueue = ArrayBlockingQueue<InputBatch>(64)
     private val inputCapturer = StrokeInputCapturer(layerStack.camera, inputPool, inputQueue)
 
-    private val defaultBrush = BrushSettings(
+    private var brushSettings = BrushSettings(
         name = "Round Opaque",
         baseRadiusPx = 16f,
         spacing = 0.12f,
@@ -64,7 +64,7 @@ class EngineRenderer(
         pressureGamma = 1.1f,
         minSizeRatio = 0.12f,
     )
-    private val stampEmitter = StampEmitter(defaultBrush)
+    private val stampEmitter = StampEmitter(brushSettings)
     private val dabBuffer = DabBuffer()
     private val strokeColorLinear = FloatArray(3)
     private val strokeDirtyRect = DirtyRect()
@@ -72,6 +72,9 @@ class EngineRenderer(
 
     private var strokeActive = false
     private val cancelRequested = AtomicBoolean(false)
+
+    /** Assigned by PaintSurfaceView; invoked on the GL thread. */
+    var onStateChange: ((EditorUiState) -> Unit)? = null
 
     fun onTouchEvent(event: MotionEvent): Boolean = inputCapturer.onTouchEvent(event)
 
@@ -82,6 +85,7 @@ class EngineRenderer(
         val layer = layerStack.findLayerById(entry.layerId) ?: return
         TileSnapshotRestore.restore(layer.target, entry.beforeTiles)
         layer.version++
+        publishState()
     }
 
     fun redo() {
@@ -90,21 +94,59 @@ class EngineRenderer(
         val layer = layerStack.findLayerById(entry.layerId) ?: return
         TileSnapshotRestore.restore(layer.target, entry.afterTiles)
         layer.version++
+        publishState()
     }
 
     fun setActiveLayer(id: Long): Boolean {
         resetStroke()
-        return layerStack.setActive(id)
+        return layerStack.setActive(id).also { changed ->
+            if (changed) publishState()
+        }
     }
+
+    fun addLayer(): Long = addLayer(nextLayerName())
 
     fun addLayer(name: String): Long {
         resetStroke()
-        return layerStack.addLayer(name).id
+        return layerStack.addLayer(name).id.also { publishState() }
     }
 
     fun removeLayer(id: Long): Boolean {
         resetStroke()
-        return layerStack.removeLayer(id) != null
+        return (layerStack.removeLayer(id) != null).also { removed ->
+            if (removed) publishState()
+        }
+    }
+
+    fun setLayerVisible(id: Long, visible: Boolean) {
+        resetStroke()
+        val layer = layerStack.findLayerById(id) ?: return
+        layer.isVisible = visible
+        publishState()
+    }
+
+    fun setLayerOpacity(id: Long, opacity: Float) {
+        val layer = layerStack.findLayerById(id) ?: return
+        layer.opacity = opacity.coerceIn(0f, 1f)
+        publishState()
+    }
+
+    fun setBrushSize(px: Float) {
+        resetStroke()
+        brushSettings = brushSettings.copy(baseRadiusPx = px.coerceIn(1f, 200f))
+        stampEmitter.updateSettings(brushSettings)
+        publishState()
+    }
+
+    fun setBrushOpacity(opacity: Float) {
+        resetStroke()
+        brushSettings = brushSettings.copy(opacity = opacity.coerceIn(0f, 1f))
+        stampEmitter.updateSettings(brushSettings)
+        publishState()
+    }
+
+    fun requestState() {
+        publishState()
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -122,7 +164,8 @@ class EngineRenderer(
         geometry = CanvasGeometry().also { it.create(documentWidth, documentHeight) }
         compositor = Compositor().also { it.create() }
         dabRenderer = DabRenderer(dabBuffer.capacity).also { it.create() }
-        ColorSpaces.srgb8ToLinear(defaultBrush.colorArgb, strokeColorLinear)
+        ColorSpaces.srgb8ToLinear(brushSettings.colorArgb, strokeColorLinear)
+        publishState()
         GlCheck.noError("P6 surface creation")
     }
 
@@ -203,7 +246,7 @@ class EngineRenderer(
                         if (!batch.isEmpty()) {
                             resetStroke()
                             strokeActive = true
-                            ColorSpaces.srgb8ToLinear(defaultBrush.colorArgb, strokeColorLinear)
+                            ColorSpaces.srgb8ToLinear(brushSettings.colorArgb, strokeColorLinear)
                             stampEmitter.begin(batch, dabBuffer)
                         }
                     }
@@ -245,6 +288,7 @@ class EngineRenderer(
         layer.version++
         val afterTiles = TileSnapshotCapture.capture(layer.target, dirtyBounds)
         undoManager.push(UndoEntry(layer.id, beforeTiles, afterTiles))
+        publishState()
     }
 
     /** Returns a clamped pixel region covering the exact emitted dabs and their AA fringe. */
@@ -280,6 +324,36 @@ class EngineRenderer(
             inputPool.release(batch)
         }
     }
+
+    private fun publishState() {
+        val listener = onStateChange ?: return
+        val layers = layerStack.allLayers()
+        val activeLayerId = layerStack.activeLayerId
+        val canDeleteLayers = layers.size > 1
+        listener(
+            EditorUiState(
+                layers = layers.map { layer ->
+                    LayerUiModel(
+                        id = layer.id,
+                        name = layer.name,
+                        isVisible = layer.isVisible,
+                        isLocked = layer.isLocked,
+                        opacity = layer.opacity,
+                        active = layer.id == activeLayerId,
+                        canDelete = !layer.isLocked && canDeleteLayers,
+                    )
+                },
+                canUndo = undoManager.canUndo,
+                canRedo = undoManager.canRedo,
+                brushSizePx = brushSettings.baseRadiusPx,
+                brushOpacity = brushSettings.opacity,
+                activeLayerId = activeLayerId,
+                ready = layerStack.canvasWidth > 0 && layerStack.canvasHeight > 0,
+            ),
+        )
+    }
+
+    private fun nextLayerName(): String = "Слой ${layerStack.count + 1}"
 
     companion object {
         const val DEFAULT_CANVAS_WIDTH = 1500
