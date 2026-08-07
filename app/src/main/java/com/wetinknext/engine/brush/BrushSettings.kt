@@ -2,7 +2,18 @@ package com.wetinknext.engine.brush
 
 enum class BrushRenderMode { STAMP, RIBBON, WET }
 enum class BlendPolicy { NORMAL_BUILDUP, NON_BUILDUP }
-data class RibbonSettings(val minWidthRatio: Float = 0.06f, val taperStartPx: Float = 8f, val taperEndPx: Float = 14f, val miterLimit: Float = 3f, val aaWidthPx: Float = 1f)
+enum class RibbonCap { ROUND, BUTT }
+enum class RibbonJoin { MITER, ROUND, BEVEL }
+data class RibbonSettings(
+    val minWidthRatio: Float = 0.06f,
+    val taperStartPx: Float = 8f,
+    val taperEndPx: Float = 14f,
+    val miterLimit: Float = 3f,
+    val aaWidthPx: Float = 1f,
+    val cap: RibbonCap = RibbonCap.ROUND,
+    val join: RibbonJoin = RibbonJoin.ROUND,
+    val minPointDistancePx: Float = 0.5f,
+)
 data class WetSettings(val wetness: Float = 0f, val spread: Float = 0f, val bleed: Float = 0f)
 data class BrushSettings(
     val name: String = "Debug Stamp", val category: String = "Debug", val renderMode: BrushRenderMode = BrushRenderMode.STAMP,

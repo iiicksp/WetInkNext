@@ -8,6 +8,12 @@ import com.wetinknext.engine.brush.ColorSpaces
 import com.wetinknext.engine.brush.DabBuffer
 import com.wetinknext.engine.brush.DabRenderer
 import com.wetinknext.engine.brush.StampEmitter
+import com.wetinknext.engine.brush.BrushRenderMode
+import com.wetinknext.engine.brush.RibbonEmitter
+import com.wetinknext.engine.brush.RibbonGeometry
+import com.wetinknext.engine.brush.RibbonMesh
+import com.wetinknext.engine.brush.RibbonRenderer
+import com.wetinknext.engine.brush.RibbonTriangulation
 import com.wetinknext.engine.canvas.Compositor
 import com.wetinknext.engine.canvas.LayerStack
 import com.wetinknext.engine.gl.CanvasGeometry
@@ -42,6 +48,7 @@ class EngineRenderer(
     private var geometry: CanvasGeometry? = null
     private var compositor: Compositor? = null
     private var dabRenderer: DabRenderer? = null
+    private var ribbonRenderer: RibbonRenderer? = null
     private val strokeTarget = RenderTarget()
     private val canvasToFboMatrix = FloatArray(16)
     private val canvasToClipMatrix = FloatArray(16)
@@ -54,17 +61,30 @@ class EngineRenderer(
     private val inputCapturer = StrokeInputCapturer(layerStack.camera, inputPool, inputQueue)
 
     private var brushSettings = BrushSettings(
-        name = "Round Opaque",
-        baseRadiusPx = 16f,
+        name = "G-Pen",
+        renderMode = BrushRenderMode.RIBBON,
+        baseRadiusPx = 9f,
         spacing = 0.12f,
         colorArgb = 0xFF1B1F24L,
-        smoothing = 0.25f,
-        streamline = 0.05f,
+        smoothing = 0.35f,
+        streamline = 0.22f,
         pressureToOpacity = false,
-        pressureGamma = 1.1f,
-        minSizeRatio = 0.12f,
+        pressureGamma = 1.7f,
+        minSizeRatio = 0.06f,
+        ribbon = com.wetinknext.engine.brush.RibbonSettings(
+            cap = com.wetinknext.engine.brush.RibbonCap.ROUND,
+            join = com.wetinknext.engine.brush.RibbonJoin.ROUND,
+            miterLimit = 2.5f,
+            minPointDistancePx = 1.25f,
+            aaWidthPx = 1f,
+            taperStartPx = 16f,
+            taperEndPx = 64f,
+        ),
     )
     private val stampEmitter = StampEmitter(brushSettings)
+    private val ribbonEmitter = RibbonEmitter(brushSettings)
+    private var ribbonMesh: RibbonMesh? = null
+    private var ribbonMeshDirty = true
     private val dabBuffer = DabBuffer()
     private val strokeColorLinear = FloatArray(3)
     private val strokeDirtyRect = DirtyRect()
@@ -135,6 +155,7 @@ class EngineRenderer(
         resetStroke()
         brushSettings = brushSettings.copy(baseRadiusPx = px.coerceIn(1f, 200f))
         stampEmitter.updateSettings(brushSettings)
+        ribbonEmitter.updateSettings(brushSettings)
         publishState()
     }
 
@@ -142,6 +163,7 @@ class EngineRenderer(
         resetStroke()
         brushSettings = brushSettings.copy(opacity = opacity.coerceIn(0f, 1f))
         stampEmitter.updateSettings(brushSettings)
+        ribbonEmitter.updateSettings(brushSettings)
         publishState()
     }
 
@@ -164,6 +186,7 @@ class EngineRenderer(
         geometry = CanvasGeometry().also { it.create(documentWidth, documentHeight) }
         compositor = Compositor().also { it.create() }
         dabRenderer = DabRenderer(dabBuffer.capacity).also { it.create() }
+        ribbonRenderer = RibbonRenderer().also { it.create() }
         ColorSpaces.srgb8ToLinear(brushSettings.colorArgb, strokeColorLinear)
         publishState()
         GlCheck.noError("P6 surface creation")
@@ -181,7 +204,9 @@ class EngineRenderer(
         if (cancelRequested.compareAndSet(true, false)) resetStroke()
         drainInput()
 
-        if (strokeActive && dabBuffer.count > 0) {
+        if (strokeActive && brushSettings.renderMode == BrushRenderMode.RIBBON) {
+            renderRibbonPreview()
+        } else if (strokeActive && dabBuffer.count > 0) {
             strokeTarget.clear(0f, 0f, 0f, 0f)
             dabRenderer?.drawInto(
                 target = strokeTarget,
@@ -209,7 +234,7 @@ class EngineRenderer(
             geometry = geometry ?: return,
             layers = layerStack,
             activeLayerId = layerStack.activeLayerId,
-            strokeTextureId = if (strokeActive && dabBuffer.count > 0) strokeTarget.textureId else 0,
+            strokeTextureId = if (strokeActive && (dabBuffer.count > 0 || ribbonMesh?.isEmpty == false)) strokeTarget.textureId else 0,
             canvasToClip = canvasToClipMatrix,
         )
     }
@@ -228,6 +253,8 @@ class EngineRenderer(
         undoManager.clear()
         dabRenderer?.release()
         dabRenderer = null
+        ribbonRenderer?.release()
+        ribbonRenderer = null
         compositor?.release()
         compositor = null
         geometry?.release()
@@ -247,17 +274,31 @@ class EngineRenderer(
                             resetStroke()
                             strokeActive = true
                             ColorSpaces.srgb8ToLinear(brushSettings.colorArgb, strokeColorLinear)
-                            stampEmitter.begin(batch, dabBuffer)
+                            if (brushSettings.renderMode == BrushRenderMode.RIBBON) {
+                                ribbonEmitter.begin(batch)
+                                ribbonMeshDirty = true
+                            } else stampEmitter.begin(batch, dabBuffer)
                         }
                     }
 
                     InputAction.MOVE -> if (strokeActive) {
-                        stampEmitter.append(batch, dabBuffer)
+                        if (brushSettings.renderMode == BrushRenderMode.RIBBON) {
+                            ribbonEmitter.append(batch)
+                            ribbonMeshDirty = true
+                        } else stampEmitter.append(batch, dabBuffer)
                     }
 
                     InputAction.UP -> if (strokeActive) {
-                        stampEmitter.finish(dabBuffer, cancel = false)
-                        commitStroke()
+                        if (brushSettings.renderMode == BrushRenderMode.RIBBON) {
+                            ribbonEmitter.append(batch)
+                            ribbonEmitter.finish(cancel = false)
+                            buildRibbonMesh()
+                            commitRibbonStroke()
+                        } else {
+                            stampEmitter.append(batch, dabBuffer)
+                            stampEmitter.finish(dabBuffer, cancel = false)
+                            commitStroke()
+                        }
                         resetStroke()
                     }
 
@@ -312,6 +353,9 @@ class EngineRenderer(
         strokeActive = false
         stampEmitter.reset()
         dabBuffer.clear()
+        ribbonEmitter.reset()
+        ribbonMesh = null
+        ribbonMeshDirty = true
         if (strokeTarget.framebufferId != 0) {
             strokeTarget.clear(0f, 0f, 0f, 0f)
         }
@@ -354,6 +398,46 @@ class EngineRenderer(
     }
 
     private fun nextLayerName(): String = "Слой ${layerStack.count + 1}"
+
+    private fun buildRibbonMesh() {
+        if (!ribbonEmitter.hasStroke) { ribbonMesh = null; return }
+        val settings = brushSettings.ribbon
+        val outline = RibbonGeometry.build(ribbonEmitter.samples(), settings.cap, settings.join, settings.miterLimit, settings.aaWidthPx, ribbonEmitter.closedLoop)
+        ribbonMesh = RibbonTriangulation.build(
+            outline, settings.aaWidthPx, ribbonEmitter.arcLengths(), ribbonEmitter.totalLength(),
+            settings.taperStartPx, settings.taperEndPx, false, settings.join, settings.miterLimit,
+        )
+        ribbonMeshDirty = false
+    }
+
+    private fun renderRibbonPreview() {
+        if (ribbonMeshDirty) buildRibbonMesh()
+        val mesh = ribbonMesh ?: return
+        strokeTarget.clear(0f, 0f, 0f, 0f)
+        ribbonRenderer?.draw(strokeTarget, layerStack.canvasWidth, layerStack.canvasHeight, canvasToFboMatrix, mesh, strokeColorLinear, brushSettings.flow, brushSettings.antiAliasLevel, brushSettings.noAntialias)
+    }
+
+    private fun commitRibbonStroke() {
+        val layer = layerStack.activeLayer() ?: return
+        val mesh = ribbonMesh ?: return
+        if (layer.isLocked || mesh.isEmpty || !computeRibbonDirtyBounds(dirtyBounds)) return
+        val before = TileSnapshotCapture.capture(layer.target, dirtyBounds)
+        ribbonRenderer?.draw(layer.target, layerStack.canvasWidth, layerStack.canvasHeight, canvasToFboMatrix, mesh, strokeColorLinear, brushSettings.flow, brushSettings.antiAliasLevel, brushSettings.noAntialias)
+        layer.version++
+        val after = TileSnapshotCapture.capture(layer.target, dirtyBounds)
+        undoManager.push(UndoEntry(layer.id, before, after))
+        publishState()
+    }
+
+    private fun computeRibbonDirtyBounds(out: IntArray): Boolean {
+        val samples = ribbonEmitter.samples()
+        if (samples.isEmpty()) return false
+        strokeDirtyRect.clear()
+        for (sample in samples) strokeDirtyRect.include(sample.x, sample.y, sample.halfWidth + brushSettings.ribbon.aaWidthPx + AA_MARGIN_PX)
+        strokeDirtyRect.clamp(layerStack.canvasWidth.toFloat(), layerStack.canvasHeight.toFloat())
+        strokeDirtyRect.toPixelBounds(out)
+        return out[2] > out[0] && out[3] > out[1]
+    }
 
     companion object {
         const val DEFAULT_CANVAS_WIDTH = 1500

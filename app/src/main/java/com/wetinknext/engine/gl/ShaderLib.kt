@@ -82,4 +82,14 @@ object ShaderLib {
         out vec4 fragColor;
         void main() { fragColor = vec4(vUv, 0.0, 1.0); }
     """
+    const val ribbonVertex = """#version 300 es
+        layout(location=0) in vec2 aPos; layout(location=1) in float aCoverage; layout(location=2) in float aAlpha;
+        uniform mat4 uCanvasToClip; out float vCoverage; out float vAlpha;
+        void main(){vCoverage=aCoverage;vAlpha=aAlpha;gl_Position=uCanvasToClip*vec4(aPos,0.,1.);}
+    """
+    const val ribbonFragment = """#version 300 es
+        precision highp float; in float vCoverage; in float vAlpha; uniform vec3 uColorLinear; uniform float uFlow;
+        uniform int uAntiAliasLevel; uniform int uNoAntialias; out vec4 fragColor;
+        void main(){float cov=vCoverage;if(uNoAntialias==1||uAntiAliasLevel==0)cov=step(.5,cov);else{float e=uAntiAliasLevel==1?.35:uAntiAliasLevel==2?.5:.7;cov=smoothstep(.5-e,.5+e,cov);}float a=vAlpha*cov*uFlow;fragColor=vec4(uColorLinear*a,a);}
+    """
 }
