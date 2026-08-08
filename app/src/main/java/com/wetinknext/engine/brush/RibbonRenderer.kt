@@ -22,13 +22,26 @@ class RibbonRenderer(private val maxVertices: Int = DEFAULT_MAX_VERTICES) {
         GLES30.glEnableVertexAttribArray(1); GLES30.glVertexAttribPointer(1, 1, GLES30.GL_FLOAT, false, RibbonShader.VERTEX_STRIDE_BYTES, 8)
         GLES30.glEnableVertexAttribArray(2); GLES30.glVertexAttribPointer(2, 1, GLES30.GL_FLOAT, false, RibbonShader.VERTEX_STRIDE_BYTES, 12); GLES30.glBindVertexArray(0)
     }
-    fun draw(target: RenderTarget, width: Int, height: Int, canvasToFbo: FloatArray, mesh: RibbonMesh, color: FloatArray, flow: Float, antiAliasLevel: Int, noAntialias: Boolean) {
-        val p = program ?: return; if (mesh.isEmpty || mesh.vertexCount > maxVertices || mesh.indices.size > maxVertices * 3) return
+    var droppedMeshes = 0L
+        private set
+
+    fun draw(target: RenderTarget, width: Int, height: Int, canvasToFbo: FloatArray, mesh: RibbonMesh, color: FloatArray, flow: Float, antiAliasLevel: Int, noAntialias: Boolean, nonBuildup: Boolean = false) {
+        val p = program ?: return
+        if (mesh.isEmpty) return
+        if (mesh.vertexCount > maxVertices || mesh.indices.size > maxVertices * 3) { droppedMeshes++; return }
         vertexData.clear(); for (i in 0 until mesh.vertexCount) { vertexData.put(mesh.vertices[i*2]); vertexData.put(mesh.vertices[i*2+1]); vertexData.put(mesh.coverage[i]); vertexData.put(mesh.alpha[i]) }; vertexData.flip()
         indexData.clear(); mesh.indices.forEach { indexData.put(it) }; indexData.flip()
-        target.bind(); GLES30.glViewport(0,0,width,height); GLES30.glEnable(GLES30.GL_BLEND); GLES30.glBlendFunc(GLES30.GL_ONE,GLES30.GL_ONE_MINUS_SRC_ALPHA); p.use()
+        target.bind(); GLES30.glViewport(0, 0, width, height); GLES30.glEnable(GLES30.GL_BLEND)
+        if (nonBuildup) {
+            // Цвет штриха постоянный, rgb = color*a => GL_MAX по RGBA = объединение покрытия.
+            // Каппы, фаны джойнов и AA-юбка перестают накладываться друг на друга.
+            GLES30.glBlendEquation(GLES30.GL_MAX); GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE)
+        } else {
+            GLES30.glBlendEquation(GLES30.GL_FUNC_ADD); GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        }
+        p.use()
         GLES30.glUniformMatrix4fv(uMatrix,1,false,canvasToFbo,0); GLES30.glUniform3f(uColor,color[0],color[1],color[2]); GLES30.glUniform1f(uFlow,flow.coerceIn(0f,1f)); GLES30.glUniform1i(uAa,antiAliasLevel.coerceIn(0,3)); GLES30.glUniform1i(uNoAa,if(noAntialias)1 else 0)
-        GLES30.glBindVertexArray(vao); GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER,vbo); GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER,0,mesh.vertexCount*RibbonShader.VERTEX_STRIDE_BYTES,vertexData); GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER,ebo); GLES30.glBufferSubData(GLES30.GL_ELEMENT_ARRAY_BUFFER,0,mesh.indices.size*Int.SIZE_BYTES,indexData); GLES30.glDrawElements(GLES30.GL_TRIANGLES,mesh.indices.size,GLES30.GL_UNSIGNED_INT,0); GLES30.glBindVertexArray(0); GLES30.glDisable(GLES30.GL_BLEND); GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER,0)
+        GLES30.glBindVertexArray(vao); GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER,vbo); GLES30.glBufferSubData(GLES30.GL_ARRAY_BUFFER,0,mesh.vertexCount*RibbonShader.VERTEX_STRIDE_BYTES,vertexData); GLES30.glBindBuffer(GLES30.GL_ELEMENT_ARRAY_BUFFER,ebo); GLES30.glBufferSubData(GLES30.GL_ELEMENT_ARRAY_BUFFER,0,mesh.indices.size*Int.SIZE_BYTES,indexData); GLES30.glDrawElements(GLES30.GL_TRIANGLES,mesh.indices.size,GLES30.GL_UNSIGNED_INT,0); GLES30.glBindVertexArray(0); GLES30.glBlendEquation(GLES30.GL_FUNC_ADD); GLES30.glDisable(GLES30.GL_BLEND); GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER,0)
     }
     fun release(){ program?.release();program=null;if(vbo!=0)GLES30.glDeleteBuffers(1,intArrayOf(vbo),0);if(ebo!=0)GLES30.glDeleteBuffers(1,intArrayOf(ebo),0);if(vao!=0)GLES30.glDeleteVertexArrays(1,intArrayOf(vao),0);vao=0;vbo=0;ebo=0 }
     companion object { const val DEFAULT_MAX_VERTICES = 65_536 }

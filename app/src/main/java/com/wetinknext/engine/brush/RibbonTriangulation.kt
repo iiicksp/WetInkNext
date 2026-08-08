@@ -31,7 +31,20 @@ object RibbonTriangulation {
             val previous = directions[(i - 1 + segmentCount) % segmentCount]; val next = directions[i % segmentCount]; val cross = previous.x * next.y - previous.y * next.x; if (abs(cross) < 1e-5f) continue
             val pn = RVec2(-previous.y, previous.x); val nn = RVec2(-next.y, next.x); var mx = pn.x + nn.x; var my = pn.y + nn.y; val ml = hypot(mx,my); if (ml < 1e-5f) continue; mx /= ml; my /= ml
             val width = widths[i]; val outerSign = if (cross < 0f) 1f else -1f; val outerA = RVec2(centers[i].x + outerSign * pn.x * width, centers[i].y + outerSign * pn.y * width); val outerB = RVec2(centers[i].x + outerSign * nn.x * width, centers[i].y + outerSign * nn.y * width); fan(centers[i], arcPoints(centers[i], outerA, outerB, width), aaWidthPx, width, arcAt(i), ::add, ::triangle)
-            val limit = miterLimit.coerceAtLeast(1f); val cosHalf = (mx * pn.x + my * pn.y).coerceAtLeast(1f / limit); val scale = (1f / cosHalf).coerceAtMost(limit); val innerA = RVec2(centers[i].x - outerSign * pn.x * width, centers[i].y - outerSign * pn.y * width); val innerB = RVec2(centers[i].x - outerSign * nn.x * width, centers[i].y - outerSign * nn.y * width); val innerMiter = RVec2(centers[i].x - outerSign * mx * width * scale, centers[i].y - outerSign * my * width * scale); triangle(add(innerA.x,innerA.y,1f,arcAt(i)),add(innerMiter.x,innerMiter.y,1f,arcAt(i)),add(innerB.x,innerB.y,1f,arcAt(i)))
+            val limit = miterLimit.coerceAtLeast(1f)
+            val cosHalf = (mx * pn.x + my * pn.y).coerceAtLeast(1f / limit)
+            val scale = (1f / cosHalf).coerceAtMost(limit)
+            // Внутренний клин длиннее соседнего сегмента = self-intersection и зазубрины на толстой кисти.
+            val pi2 = (i - 1 + n) % n
+            val ni2 = (i + 1) % n
+            val prevLen = hypot(centers[i].x - centers[pi2].x, centers[i].y - centers[pi2].y)
+            val nextLen = hypot(centers[ni2].x - centers[i].x, centers[ni2].y - centers[i].y)
+            if (width * scale <= kotlin.math.min(prevLen, nextLen) * .9f) {
+                val innerA = RVec2(centers[i].x - outerSign * pn.x * width, centers[i].y - outerSign * pn.y * width)
+                val innerB = RVec2(centers[i].x - outerSign * nn.x * width, centers[i].y - outerSign * nn.y * width)
+                val innerMiter = RVec2(centers[i].x - outerSign * mx * width * scale, centers[i].y - outerSign * my * width * scale)
+                triangle(add(innerA.x, innerA.y, 1f, arcAt(i)), add(innerMiter.x, innerMiter.y, 1f, arcAt(i)), add(innerB.x, innerB.y, 1f, arcAt(i)))
+            }
         }
         if (!outline.closed && outline.startCap.isNotEmpty()) fan(centers[0], outline.startCap, aaWidthPx, widths[0], arcAt(0), ::add, ::triangle)
         if (!outline.closed && outline.endCap.isNotEmpty()) fan(centers.last(), outline.endCap, aaWidthPx, widths.last(), arcAt(n-1), ::add, ::triangle)

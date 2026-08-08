@@ -19,6 +19,7 @@ data class RibbonOutline(
 
 object RibbonGeometry {
     private const val CAP_SEGMENTS = 48
+    private const val DOT_SPAN_RATIO = 0.75f
 
     fun build(samples: List<RibbonSample>, cap: RibbonCap, join: RibbonJoin, miterLimit: Float, aaWidthPx: Float = 0f, closed: Boolean = false): RibbonOutline {
         val clean = dedupe(samples)
@@ -30,28 +31,16 @@ object RibbonGeometry {
             return RibbonOutline(listOf(RVec2(point.x, point.y)), floatArrayOf(width), fullCircle(point.x, point.y, width), emptyList())
         }
 
-        // A stylus tap may contain a few distinct samples, but its path is much
-        // shorter than the brush radius.  Rendering such a path as a thin
-        // segment plus two direction-dependent half-caps is numerically
-        // unstable and can produce a wedge instead of a dot.  Treat open
-        // micro-strokes as one round dab.  Closed loops intentionally bypass
-        // this branch and retain their sweep geometry.
-        val maxWidth = clean.maxOf { it.halfWidth.coerceAtLeast(0f) }
-        val pathLength = pathLength(clean)
-        if (!isClosed && pathLength < maxWidth * SHORT_STROKE_RADIUS_RATIO) {
-            var sumX = 0f
-            var sumY = 0f
-            for (sample in clean) {
-                sumX += sample.x
-                sumY += sample.y
-            }
-            val centerX = sumX / clean.size
-            val centerY = sumY / clean.size
+        // 2-5 сэмплов внутри собственного радиуса: sweep даст сектор/треугольник. Рисуем диск.
+        var widest = 0f
+        for (s in clean) if (s.halfWidth > widest) widest = s.halfWidth
+        if (widest > 0f && pathLength(clean) <= widest * DOT_SPAN_RATIO) {
+            val p = clean.last()
             return RibbonOutline(
-                centers = listOf(RVec2(centerX, centerY)),
-                widths = floatArrayOf(maxWidth),
-                startCap = fullCircle(centerX, centerY, maxWidth),
-                endCap = emptyList(),
+                listOf(RVec2(p.x, p.y)),
+                floatArrayOf(widest),
+                fullCircle(p.x, p.y, widest),
+                emptyList(),
             )
         }
 
@@ -69,15 +58,19 @@ object RibbonGeometry {
         return result
     }
     private fun pathLength(samples: List<RibbonSample>): Float {
-        var length = 0f
-        for (i in 1 until samples.size) {
-            length += hypot(samples[i].x - samples[i - 1].x, samples[i].y - samples[i - 1].y)
-        }
-        return length
+        var total = 0f
+        for (i in 1 until samples.size) total += hypot(samples[i].x - samples[i - 1].x, samples[i].y - samples[i - 1].y)
+        return total
     }
     private fun segmentDirection(samples: List<RibbonSample>, index: Int): RVec2 { val dx = samples[index + 1].x - samples[index].x; val dy = samples[index + 1].y - samples[index].y; val length = hypot(dx, dy).coerceAtLeast(1e-5f); return RVec2(dx / length, dy / length) }
-    private fun endArc(sample: RibbonSample, direction: RVec2, radius: Float, tail: Boolean): List<RVec2> { if (radius <= 0f) return emptyList(); val base = if (tail) atan2(-direction.x, direction.y) else atan2(direction.x, -direction.y); val sweep = if (tail) -kotlin.math.PI.toFloat() else kotlin.math.PI.toFloat(); return List(CAP_SEGMENTS + 1) { i -> val angle = base + sweep * i / CAP_SEGMENTS; RVec2(sample.x + radius * cos(angle), sample.y + radius * sin(angle)) } }
+    private fun endArc(sample: RibbonSample, direction: RVec2, radius: Float, tail: Boolean): List<RVec2> {
+        if (radius <= 0f) return emptyList()
+        val base = if (tail) atan2(-direction.x, direction.y) else atan2(direction.x, -direction.y)
+        val sweep = -kotlin.math.PI.toFloat()
+        return List(CAP_SEGMENTS + 1) { i ->
+            val angle = base + sweep * i / CAP_SEGMENTS
+            RVec2(sample.x + radius * cos(angle), sample.y + radius * sin(angle))
+        }
+    }
     private fun fullCircle(x: Float, y: Float, radius: Float) = if (radius <= 0f) emptyList() else List(CAP_SEGMENTS + 1) { i -> val angle = 2f * kotlin.math.PI.toFloat() * i / CAP_SEGMENTS; RVec2(x + radius * cos(angle), y + radius * sin(angle)) }
-
-    private const val SHORT_STROKE_RADIUS_RATIO = 0.5f
 }

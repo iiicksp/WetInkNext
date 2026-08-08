@@ -11,6 +11,7 @@ object ShaderLib {
         uniform sampler2D uStrokeTex;
         uniform int uStrokeActive;
         uniform float uOpacity;
+        uniform float uStrokeOpacity;
 
         out vec4 fragColor;
 
@@ -28,7 +29,7 @@ object ShaderLib {
         void main() {
             vec4 layer = texture(uLayerTex, vUv);
             if (uStrokeActive == 1) {
-                vec4 stroke = texture(uStrokeTex, vUv);
+                vec4 stroke = texture(uStrokeTex, vUv) * uStrokeOpacity;
                 layer = stroke + layer * (1.0 - stroke.a);
             }
 
@@ -91,5 +92,88 @@ object ShaderLib {
         precision highp float; in float vCoverage; in float vAlpha; uniform vec3 uColorLinear; uniform float uFlow;
         uniform int uAntiAliasLevel; uniform int uNoAntialias; out vec4 fragColor;
         void main(){float cov=vCoverage;if(uNoAntialias==1||uAntiAliasLevel==0)cov=step(.5,cov);else{float e=uAntiAliasLevel==1?.35:uAntiAliasLevel==2?.5:.7;cov=smoothstep(.5-e,.5+e,cov);}float a=vAlpha*cov*uFlow;fragColor=vec4(uColorLinear*a,a);}
+    """
+
+    /**
+     * Один сегмент штриха = капсула (round cone): два круга с линейной интерполяцией радиуса.
+     * Вершинный шейдер строит только AABB сегмента, форма считается во фрагменте.
+     */
+    const val capsuleVertex = """#version 300 es
+        layout(location = 0) in vec2 aCorner;   // -1..1, TRIANGLE_STRIP из 4 вершин
+        layout(location = 1) in vec3 iA;        // x, y, radius (начало сегмента)
+        layout(location = 2) in vec3 iB;        // x, y, radius (конец сегмента)
+        uniform mat4 uCanvasToClip;
+        out vec2 vPos;
+        flat out vec3 vA;
+        flat out vec3 vB;
+        void main() {
+            // Запас 2 px на AA-переход, иначе край обрежется по границе квада.
+            vec2 lo = min(iA.xy - iA.z, iB.xy - iB.z) - 2.0;
+            vec2 hi = max(iA.xy + iA.z, iB.xy + iB.z) + 2.0;
+            vec2 p = mix(lo, hi, aCorner * 0.5 + 0.5);
+            vPos = p;
+            vA = iA;
+            vB = iB;
+            gl_Position = uCanvasToClip * vec4(p, 0.0, 1.0);
+        }
+    """
+
+    /**
+     * Аналитическое покрытие: нет каппов, джойнов, miter и AA-юбки как отдельных сущностей.
+     * Выход строго premultiplied linear: rgb = color * a, a = cov.
+     * Рисовать ТОЛЬКО с glBlendEquation(GL_MAX) + glBlendFunc(GL_ONE, GL_ONE):
+     * MAX идемпотентен, поэтому перекрытия сегментов не накапливают альфу.
+     */
+    const val capsuleFragment = """#version 300 es
+        precision highp float;
+        in vec2 vPos;
+        flat in vec3 vA;
+        flat in vec3 vB;
+        uniform vec3 uColorLinear;
+        out vec4 fragColor;
+
+        float sdRoundCone(vec2 p, vec2 a, vec2 b, float r1, float r2) {
+            vec2 ba = b - a;
+            float l2 = dot(ba, ba);
+            float rr = r1 - r2;
+
+            // Guard 1: вырожденный сегмент (тап, дубль сэмпла) -> обычный круг.
+            if (l2 < 1e-6) return length(p - a) - max(r1, r2);
+            // Guard 2: один круг поглощает другой (скачок давления на коротком шаге).
+            // Без этого a2 < 0 -> sqrt(отрицательного) -> NaN -> чёрные клинья.
+            if (rr * rr >= l2) return (r1 > r2) ? (length(p - a) - r1) : (length(p - b) - r2);
+
+            float a2 = l2 - rr * rr;
+            float il2 = 1.0 / l2;
+            vec2 pa = p - a;
+            float y = dot(pa, ba);
+            float z = y - l2;
+            vec2 xv = pa * l2 - ba * y;
+            float x2 = dot(xv, xv);
+            float y2 = y * y * l2;
+            float z2 = z * z * l2;
+            float k = sign(rr) * rr * rr * x2;
+
+            if (sign(z) * a2 * z2 > k) return sqrt(x2 + z2) * il2 - r2;   // круглый конец у B
+            if (sign(y) * a2 * y2 < k) return sqrt(x2 + y2) * il2 - r1;   // круглый конец у A
+            return (sqrt(x2 * a2 * il2) + y * rr) * il2 - r1;             // касательная боковина
+        }
+
+        void main() {
+            float d = sdRoundCone(vPos, vA.xy, vB.xy, vA.z, vB.z);
+            float w = max(fwidth(d), 1e-4);
+            float cov = 1.0 - smoothstep(-w, w, d);
+            if (cov <= 0.0) discard;
+            fragColor = vec4(uColorLinear * cov, cov);
+        }
+    """
+
+    const val strokeBlitFragment = """#version 300 es
+        precision highp float;
+        in vec2 vUv;
+        uniform sampler2D uStrokeTex;
+        uniform float uOpacity;
+        out vec4 fragColor;
+        void main() { fragColor = texture(uStrokeTex, vUv) * uOpacity; }
     """
 }

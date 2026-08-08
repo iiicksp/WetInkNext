@@ -130,7 +130,7 @@ private fun BrushControls(
         CommitSlider(
             label = "Размер",
             value = state.brushSizePx,
-            range = 1f..200f,
+            range = 2f..400f,
             palette = palette,
             format = { "${it.toInt()} px" },
             onCommit = onBrushSizeCommit,

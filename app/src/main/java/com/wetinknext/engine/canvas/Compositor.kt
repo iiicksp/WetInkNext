@@ -15,6 +15,7 @@ class Compositor {
     private var uStrokeTex = -1
     private var uStrokeActive = -1
     private var uOpacity = -1
+    private var uStrokeOpacity = -1
 
     fun create() {
         release()
@@ -27,11 +28,12 @@ class Compositor {
         uStrokeTex = GLES30.glGetUniformLocation(currentProgram.id, "uStrokeTex")
         uStrokeActive = GLES30.glGetUniformLocation(currentProgram.id, "uStrokeActive")
         uOpacity = GLES30.glGetUniformLocation(currentProgram.id, "uOpacity")
+        uStrokeOpacity = GLES30.glGetUniformLocation(currentProgram.id, "uStrokeOpacity")
         check(uCanvasToClip >= 0 && uCanvasSize >= 0 && uLayerTex >= 0 &&
-            uStrokeTex >= 0 && uStrokeActive >= 0 && uOpacity >= 0) {
+            uStrokeTex >= 0 && uStrokeActive >= 0 && uOpacity >= 0 && uStrokeOpacity >= 0) {
             "Compositor uniforms missing: canvasToClip=$uCanvasToClip, " +
                 "canvasSize=$uCanvasSize, layerTex=$uLayerTex, strokeTex=$uStrokeTex, " +
-                "strokeActive=$uStrokeActive, opacity=$uOpacity"
+                "strokeActive=$uStrokeActive, opacity=$uOpacity, strokeOpacity=$uStrokeOpacity"
         }
         GlCheck.noError("Compositor create")
     }
@@ -42,6 +44,7 @@ class Compositor {
         activeLayerId: Long,
         strokeTextureId: Int,
         canvasToClip: FloatArray,
+        strokeOpacity: Float,
     ) {
         val currentProgram = program ?: return
         currentProgram.use()
@@ -64,6 +67,7 @@ class Compositor {
             }
             GLES30.glUniform1i(uStrokeActive, if (hasStroke) 1 else 0)
             GLES30.glUniform1f(uOpacity, layer.opacity.coerceIn(0f, 1f))
+            GLES30.glUniform1f(uStrokeOpacity, strokeOpacity.coerceIn(0f, 1f))
             geometry.draw()
         }
 
@@ -83,5 +87,6 @@ class Compositor {
         uStrokeTex = -1
         uStrokeActive = -1
         uOpacity = -1
+        uStrokeOpacity = -1
     }
 }
