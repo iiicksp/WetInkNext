@@ -11,6 +11,8 @@ class StrokeInputCapturer(private val camera: Camera, private val pool: InputBat
     private val stylusAxes = StylusAxes()
     private val tiltOut = FloatArray(2)
 
+    var onSecondaryPointerDown: (() -> Unit)? = null
+
     /** Не скрываем потери: пул кончился => сэмплы утрачены. */
     var droppedBatches = 0L
         private set
@@ -21,8 +23,13 @@ class StrokeInputCapturer(private val camera: Camera, private val pool: InputBat
             enqueue(event, InputAction.DOWN, 0, false)
         }
         MotionEvent.ACTION_POINTER_DOWN -> {
-            // Штрих уже идёт: второй палец / ладонь НЕ перехватывает управление.
-            if (activePointerId >= 0) true else {
+            // Штрих уже идёт: второй палец / ладонь ОТМЕНЯЕТ текущий штрих.
+            if (activePointerId >= 0) {
+                onSecondaryPointerDown?.invoke()
+                activePointerId = -1
+                enqueueEmpty(InputAction.CANCEL)
+                true
+            } else {
                 val i = event.actionIndex
                 activePointerId = event.getPointerId(i)
                 enqueue(event, InputAction.DOWN, i, false)

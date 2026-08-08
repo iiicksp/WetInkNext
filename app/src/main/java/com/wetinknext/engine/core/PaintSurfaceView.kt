@@ -28,6 +28,9 @@ class PaintSurfaceView @JvmOverloads constructor(
         engineRenderer.onStateChange = { state ->
             post { onEditorStateChange?.invoke(state) }
         }
+        engineRenderer.setOnSecondaryPointerDown {
+            engineRenderer.requestCancelFromInput()
+        }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean =

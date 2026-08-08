@@ -100,7 +100,15 @@ class EngineRenderer(
     /** Assigned by PaintSurfaceView; invoked on the GL thread. */
     var onStateChange: ((EditorUiState) -> Unit)? = null
 
+    fun setOnSecondaryPointerDown(listener: () -> Unit) {
+        inputCapturer.onSecondaryPointerDown = listener
+    }
+
     fun onTouchEvent(event: MotionEvent): Boolean = inputCapturer.onTouchEvent(event)
+
+    fun requestCancelFromInput() {
+        cancelRequested.set(true)
+    }
 
     /** These methods are called from GLSurfaceView.queueEvent by the UI layer. */
     fun undo() {
