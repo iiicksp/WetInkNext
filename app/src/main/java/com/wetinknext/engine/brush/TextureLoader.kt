@@ -3,12 +3,16 @@ package com.wetinknext.engine.brush
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 data class LoadedBrushTexture(
     val path: String,
-    val bitmap: Bitmap,
+    val width: Int,
+    val height: Int,
+    val rgba: ByteBuffer,
 )
 
 class TextureLoader(
@@ -23,21 +27,50 @@ class TextureLoader(
     ) {
         executor.execute {
             try {
-                val bitmap = decode(path)
-
-                onLoaded(
-                    LoadedBrushTexture(
-                        path = path,
-                        bitmap = bitmap,
-                    ),
-                )
+                val loaded = decode(path)
+                onLoaded(loaded)
             } catch (error: Throwable) {
                 onError(error)
             }
         }
     }
 
-    private fun decode(path: String): Bitmap {
+    private fun decode(path: String): LoadedBrushTexture {
+        val source = decodeBitmap(path)
+
+        val bitmap = if (source.config == Bitmap.Config.ARGB_8888) {
+            source
+        } else {
+            source.copy(Bitmap.Config.ARGB_8888, false)
+        }
+
+        val width = bitmap.width
+        val height = bitmap.height
+
+        val rgba = ByteBuffer
+            .allocateDirect(width * height * 4)
+            .order(ByteOrder.nativeOrder())
+
+        bitmap.copyPixelsToBuffer(rgba)
+        rgba.position(0)
+
+        if (bitmap !== source && !bitmap.isRecycled) {
+            bitmap.recycle()
+        }
+
+        if (!source.isRecycled && source !== bitmap) {
+            source.recycle()
+        }
+
+        return LoadedBrushTexture(
+            path = path,
+            width = width,
+            height = height,
+            rgba = rgba,
+        )
+    }
+
+    private fun decodeBitmap(path: String): Bitmap {
         val bitmap = if (path.startsWith("asset:")) {
             val assetPath = path.removePrefix("asset:")
 

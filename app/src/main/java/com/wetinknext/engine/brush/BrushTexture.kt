@@ -1,9 +1,7 @@
 package com.wetinknext.engine.brush
 
-import android.graphics.Bitmap
 import android.opengl.GLES30
 import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 class BrushTexture {
     var textureId: Int = 0
@@ -15,50 +13,24 @@ class BrushTexture {
     var height: Int = 0
         private set
 
-    fun createFromBitmap(bitmap: Bitmap) {
+    fun createFromRgba(
+        width: Int,
+        height: Int,
+        rgba: ByteBuffer,
+    ) {
         checkOnGlThread()
-
         release()
-
-        val pixels = ByteBuffer
-            .allocateDirect(bitmap.width * bitmap.height * 4)
-            .order(ByteOrder.nativeOrder())
-
-        val argb = IntArray(bitmap.width * bitmap.height)
-        bitmap.getPixels(
-            argb,
-            0,
-            bitmap.width,
-            0,
-            0,
-            bitmap.width,
-            bitmap.height,
-        )
-
-        for (pixel in argb) {
-            pixels.put(((pixel shr 16) and 0xFF).toByte())
-            pixels.put(((pixel shr 8) and 0xFF).toByte())
-            pixels.put((pixel and 0xFF).toByte())
-            pixels.put(((pixel ushr 24) and 0xFF).toByte())
-        }
-
-        pixels.position(0)
 
         val ids = IntArray(1)
         GLES30.glGenTextures(1, ids, 0)
         textureId = ids[0]
 
-        check(textureId != 0) {
-            "Failed to create brush texture"
-        }
+        check(textureId != 0) { "Failed to create brush texture" }
 
-        width = bitmap.width
-        height = bitmap.height
+        this.width = width
+        this.height = height
 
-        GLES30.glBindTexture(
-            GLES30.GL_TEXTURE_2D,
-            textureId,
-        )
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, textureId)
 
         GLES30.glTexParameteri(
             GLES30.GL_TEXTURE_2D,
@@ -95,7 +67,7 @@ class BrushTexture {
             0,
             GLES30.GL_RGBA,
             GLES30.GL_UNSIGNED_BYTE,
-            pixels,
+            rgba,
         )
 
         GLES30.glPixelStorei(

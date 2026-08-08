@@ -481,7 +481,6 @@ class EngineRenderer(
     ) {
         val renderer = capsuleRenderer
         if (renderer == null) {
-            loaded.bitmap.recycle()
             return
         }
 
@@ -489,8 +488,11 @@ class EngineRenderer(
         val newTexture = BrushTexture()
 
         try {
-            // Bitmap читается здесь только на GL-потоке во время upload.
-            newTexture.createFromBitmap(loaded.bitmap)
+            newTexture.createFromRgba(
+                width = loaded.width,
+                height = loaded.height,
+                rgba = loaded.rgba,
+            )
 
             renderer.setGrainTexture(
                 textureId = newTexture.textureId,
@@ -507,11 +509,6 @@ class EngineRenderer(
         } catch (error: Throwable) {
             newTexture.release()
             throw error
-        } finally {
-            // После glTexImage2D bitmap больше не нужен.
-            if (!loaded.bitmap.isRecycled) {
-                loaded.bitmap.recycle()
-            }
         }
     }
 

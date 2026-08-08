@@ -69,9 +69,6 @@ class PaintSurfaceView @JvmOverloads constructor(
             onLoaded = { loaded ->
                 queueEvent {
                     if (generation != grainGeneration) {
-                        if (!loaded.bitmap.isRecycled) {
-                            loaded.bitmap.recycle()
-                        }
                         return@queueEvent
                     }
 
