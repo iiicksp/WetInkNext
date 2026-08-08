@@ -12,6 +12,7 @@ class LayerStack {
 
     private val layers = mutableListOf<PaintLayer>()
     private var nextId = 1L
+    private var documentUsesHalfFloat = false
 
     var activeLayerId: Long = NO_LAYER
         private set
@@ -34,21 +35,22 @@ class LayerStack {
         release()
         canvasWidth = width
         canvasHeight = height
+        documentUsesHalfFloat = caps.supportsHalfFloatColorBuffer
 
-        val background = newLayer("Фон", caps.supportsHalfFloatColorBuffer).also {
+        val background = newLayer("Фон", documentUsesHalfFloat).also {
             it.isLocked = true
             it.target.clear(1f, 1f, 1f, 1f)
         }
         layers += background
 
-        val drawing = newLayer("Слой 1", caps.supportsHalfFloatColorBuffer)
+        val drawing = newLayer("Слой 1", documentUsesHalfFloat)
         layers += drawing
         activeLayerId = drawing.id
     }
 
     fun addLayer(name: String, insertAt: Int = layers.size): PaintLayer {
         check(canvasWidth > 0 && canvasHeight > 0) { "LayerStack has not been created" }
-        val layer = newLayer(name, activeLayer()?.target?.usesHalfFloat == true)
+        val layer = newLayer(name, documentUsesHalfFloat)
         layers.add(insertAt.coerceIn(0, layers.size), layer)
         activeLayerId = layer.id
         return layer
@@ -91,6 +93,7 @@ class LayerStack {
         activeLayerId = NO_LAYER
         canvasWidth = 0
         canvasHeight = 0
+        documentUsesHalfFloat = false
     }
 
     private fun newLayer(name: String, useHalfFloat: Boolean): PaintLayer =
