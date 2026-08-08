@@ -24,11 +24,14 @@ import com.wetinknext.engine.input.InputAction
 import com.wetinknext.engine.input.InputBatch
 import com.wetinknext.engine.input.InputBatchPool
 import com.wetinknext.engine.input.StrokeInputCapturer
+import com.wetinknext.engine.undo.DeflateTileCompressor
 import com.wetinknext.engine.undo.TileSnapshotCapture
 import com.wetinknext.engine.undo.TileSnapshotRestore
 import com.wetinknext.engine.undo.UndoEntry
 import com.wetinknext.engine.undo.UndoManager
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -44,6 +47,9 @@ class EngineRenderer(
     private var caps: GlCaps? = null
     private val layerStack = LayerStack()
     private val undoManager = UndoManager()
+    private val undoExecutor = Executors.newSingleThreadExecutor()
+    private val tileCompressor = DeflateTileCompressor()
+    private val pendingUndoEntries = ConcurrentLinkedQueue<UndoEntry>()
 
     private var geometry: CanvasGeometry? = null
     private var compositor: Compositor? = null
@@ -221,6 +227,7 @@ class EngineRenderer(
     override fun onDrawFrame(gl: GL10?) {
         if (cancelRequested.compareAndSet(true, false)) resetStroke()
         drainInput()
+        processPendingUndo()
 
         if (strokeActive && brushSettings.renderMode == BrushRenderMode.RIBBON) {
             renderCapsulePreview()
@@ -263,6 +270,14 @@ class EngineRenderer(
         )
     }
 
+    private fun processPendingUndo() {
+        while (true) {
+            val entry = pendingUndoEntries.poll() ?: break
+            undoManager.push(entry)
+            publishState()
+        }
+    }
+
     /** Safe to call from the UI thread; cancellation is executed on the next GL frame. */
     fun cancelActiveStroke() {
         cancelRequested.set(true)
@@ -289,6 +304,7 @@ class EngineRenderer(
         compositor = null
         geometry?.release()
         geometry = null
+        undoExecutor.shutdown()
         strokeTarget.release()
         layerStack.release()
         caps = null
@@ -393,7 +409,7 @@ class EngineRenderer(
         val renderer = dabRenderer ?: return
 
         // Both snapshots use the actual layer format (RGBA8 or RGBA16F).
-        val beforeTiles = TileSnapshotCapture.capture(layer.target, dirtyBounds)
+        val beforeTilesRaw = TileSnapshotCapture.capture(layer.target, dirtyBounds)
         renderer.drawInto(
             target = layer.target,
             width = layerStack.canvasWidth,
@@ -404,8 +420,14 @@ class EngineRenderer(
             blendPolicy = brushSettings.blendPolicy,
         )
         layer.version++
-        val afterTiles = TileSnapshotCapture.capture(layer.target, dirtyBounds)
-        undoManager.push(UndoEntry(layer.id, beforeTiles, afterTiles))
+        val afterTilesRaw = TileSnapshotCapture.capture(layer.target, dirtyBounds)
+        
+        val layerId = layer.id
+        undoExecutor.execute {
+            val beforeTiles = beforeTilesRaw.map { it.compress(tileCompressor) }
+            val afterTiles = afterTilesRaw.map { it.compress(tileCompressor) }
+            pendingUndoEntries.add(UndoEntry(layerId, beforeTiles, afterTiles))
+        }
         publishState()
     }
 
@@ -581,7 +603,7 @@ class EngineRenderer(
             blendPolicy = brushSettings.blendPolicy,
         )
 
-        val before = TileSnapshotCapture.capture(
+        val beforeRaw = TileSnapshotCapture.capture(
             layer.target,
             dirtyBounds,
         )
@@ -612,18 +634,17 @@ class EngineRenderer(
 
         layer.version++
 
-        val after = TileSnapshotCapture.capture(
+        val afterRaw = TileSnapshotCapture.capture(
             layer.target,
             dirtyBounds,
         )
 
-        undoManager.push(
-            UndoEntry(
-                layerId = layer.id,
-                beforeTiles = before,
-                afterTiles = after,
-            ),
-        )
+        val layerId = layer.id
+        undoExecutor.execute {
+            val beforeTiles = beforeRaw.map { it.compress(tileCompressor) }
+            val afterTiles = afterRaw.map { it.compress(tileCompressor) }
+            pendingUndoEntries.add(UndoEntry(layerId, beforeTiles, afterTiles))
+        }
 
         publishState()
     }

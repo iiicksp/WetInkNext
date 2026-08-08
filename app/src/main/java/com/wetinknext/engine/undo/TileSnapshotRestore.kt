@@ -14,7 +14,7 @@ object TileSnapshotRestore {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, target.textureId)
         GLES30.glPixelStorei(GLES30.GL_UNPACK_ALIGNMENT, 1)
         for (tile in tiles) {
-            val data = tile.storedBytes()
+            val data = tile.decompress()
             val buffer = obtainBuffer(data.size)
             buffer.clear()
             buffer.put(data)

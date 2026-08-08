@@ -16,11 +16,8 @@ class TileSnapshot(
     val memorySize: Int get() = storedData.size
     val rawSize: Int get() = pixelWidth * pixelHeight * bytesPerPixel
 
-    /** Returns raw bytes. Under P6 identity storage this returns the retained array. */
+    /** Returns raw bytes. */
     fun decompress(): ByteArray = compressor.decompress(storedData, rawSize)
-
-    /** Avoids a redundant decompression/copy in the P6 identity restore path. */
-    fun storedBytes(): ByteArray = storedData
 
     fun dispose() {
         // P6 keeps heap ByteArrays; a later off-heap implementation can release here.

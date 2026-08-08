@@ -7,7 +7,7 @@ object TileSnapshotCapture {
     private var reusable: ByteBuffer? = null
 
     /** Captures every 256 px tile intersecting [bounds] = left, top, right, bottom. */
-    fun capture(target: RenderTarget, bounds: IntArray): List<TileSnapshot> {
+    fun capture(target: RenderTarget, bounds: IntArray): List<RawTileSnapshot> {
         require(bounds.size >= 4)
         val left = bounds[0].coerceIn(0, target.width)
         val top = bounds[1].coerceIn(0, target.height)
@@ -21,7 +21,7 @@ object TileSnapshotCapture {
             TileSnapshot.BYTES_PER_PIXEL_RGBA8
         }
         val glType = if (target.usesHalfFloat) GLES30.GL_HALF_FLOAT else GLES30.GL_UNSIGNED_BYTE
-        val result = ArrayList<TileSnapshot>()
+        val result = ArrayList<RawTileSnapshot>()
         target.bind()
         GLES30.glPixelStorei(GLES30.GL_PACK_ALIGNMENT, 1)
         for (tileY in top / TileSnapshot.TILE_SIZE..(bottom - 1) / TileSnapshot.TILE_SIZE) {
@@ -40,15 +40,14 @@ object TileSnapshotCapture {
                 buffer.rewind()
                 val rawBytes = ByteArray(byteCount)
                 buffer.get(rawBytes)
-                result += TileSnapshot(
+                result += RawTileSnapshot(
                     coord = TileCoord(tileX, tileY),
                     pixelLeft = pixelLeft,
                     pixelTop = pixelTop,
                     pixelWidth = pixelWidth,
                     pixelHeight = pixelHeight,
                     bytesPerPixel = bytesPerPixel,
-                    storedData = IdentityTileCompressor.compress(rawBytes),
-                    compressor = IdentityTileCompressor,
+                    rawBytes = rawBytes,
                 )
             }
         }
