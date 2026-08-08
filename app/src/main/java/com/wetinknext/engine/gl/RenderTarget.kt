@@ -16,6 +16,7 @@ class RenderTarget {
         private set
 
     fun create(width: Int, height: Int, preferHalfFloat: Boolean) {
+        GlCheck.checkOnGlThread()
         require(width > 0 && height > 0)
         release()
         if (preferHalfFloat && createInternal(width, height, true)) return
@@ -44,6 +45,7 @@ class RenderTarget {
     }
 
     fun release() {
+        GlCheck.checkOnGlThread()
         if (framebufferId != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(framebufferId), 0)
         if (textureId != 0) GLES30.glDeleteTextures(1, intArrayOf(textureId), 0)
         framebufferId = 0; textureId = 0; width = 0; height = 0; usesHalfFloat = false

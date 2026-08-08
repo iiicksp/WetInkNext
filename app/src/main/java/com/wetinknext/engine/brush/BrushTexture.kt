@@ -1,6 +1,7 @@
 package com.wetinknext.engine.brush
 
 import android.opengl.GLES30
+import com.wetinknext.engine.gl.GlCheck
 import java.nio.ByteBuffer
 
 class BrushTexture {
@@ -18,7 +19,7 @@ class BrushTexture {
         height: Int,
         rgba: ByteBuffer,
     ) {
-        checkOnGlThread()
+        GlCheck.checkOnGlThread()
         release()
 
         val ids = IntArray(1)
@@ -82,6 +83,7 @@ class BrushTexture {
     }
 
     fun release() {
+        GlCheck.checkOnGlThread()
         if (textureId != 0) {
             GLES30.glDeleteTextures(
                 1,
@@ -95,7 +97,4 @@ class BrushTexture {
         height = 0
     }
 
-    private fun checkOnGlThread() {
-        // Вызывается только из GLSurfaceView.Renderer.
-    }
 }

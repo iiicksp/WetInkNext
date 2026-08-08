@@ -1,6 +1,7 @@
 package com.wetinknext.engine.brush
 
 import android.opengl.GLES30
+import com.wetinknext.engine.gl.GlCheck
 import com.wetinknext.engine.gl.GlProgram
 import com.wetinknext.engine.gl.RenderTarget
 import com.wetinknext.engine.gl.ShaderLib
@@ -80,8 +81,7 @@ class CapsuleStrokeRenderer(
         get() = segmentCount > uploadedSegmentCount
 
     fun create() {
-        checkOnGlThreadOnly()
-
+        GlCheck.checkOnGlThread()
         release()
 
         program = GlProgram(
@@ -583,6 +583,7 @@ class CapsuleStrokeRenderer(
      * Все GL-объекты удаляются только на GL-потоке.
      */
     fun release() {
+        GlCheck.checkOnGlThread()
         program?.release()
         program = null
 
@@ -632,11 +633,6 @@ class CapsuleStrokeRenderer(
         instanceData.limit(
             maxSegments * FLOATS_PER_SEGMENT,
         )
-    }
-
-    private fun checkOnGlThreadOnly() {
-        // Намеренно пустая проверка-документация.
-        // create/release вызываются из onSurfaceCreated/onDrawFrame.
     }
 
     private fun checkNoGlError(label: String) {

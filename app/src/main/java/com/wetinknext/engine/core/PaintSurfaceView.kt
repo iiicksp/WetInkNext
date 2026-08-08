@@ -108,8 +108,19 @@ class PaintSurfaceView @JvmOverloads constructor(
     override fun onDetachedFromWindow() {
         grainGeneration++
         textureLoader.shutdown()
+        
+        // Очищаем listeners, чтобы избежать утечек или вызовов в пустоту
+        onTextureError = null
+        onEditorStateChange = null
+        engineRenderer.onStateChange = null
+        engineRenderer.setOnSecondaryPointerDown { }
 
-        queueEvent { engineRenderer.releaseGlObjects() }
+        // Пытаемся освободить GL-объекты, но не рассчитываем на 100% успех здесь
+        queueEvent { 
+            // Отменяем активный штрих перед освобождением
+            engineRenderer.cancelActiveStroke()
+            engineRenderer.releaseGlObjects() 
+        }
         super.onDetachedFromWindow()
     }
 }

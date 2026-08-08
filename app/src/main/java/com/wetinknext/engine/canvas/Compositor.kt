@@ -18,6 +18,7 @@ class Compositor {
     private var uStrokeOpacity = -1
 
     fun create() {
+        GlCheck.checkOnGlThread()
         release()
         program = GlProgram(ShaderLib.compositorVertex, ShaderLib.compositorFragment)
         val currentProgram = checkNotNull(program)
@@ -79,6 +80,7 @@ class Compositor {
     }
 
     fun release() {
+        GlCheck.checkOnGlThread()
         program?.release()
         program = null
         uCanvasToClip = -1

@@ -50,6 +50,7 @@ class EngineRenderer(
     private var undoExecutor = Executors.newSingleThreadExecutor()
     private val tileCompressor = DeflateTileCompressor()
     private val pendingUndoEntries = ConcurrentLinkedQueue<UndoEntry>()
+    private var glThread: Thread? = null
 
     private var geometry: CanvasGeometry? = null
     private var compositor: Compositor? = null
@@ -192,7 +193,17 @@ class EngineRenderer(
         publishState()
     }
 
+    fun checkOnGlThread() {
+        val current = Thread.currentThread()
+        check(current === glThread) {
+            "GL resource accessed outside GLSurfaceView render thread: current=$current, expected=$glThread"
+        }
+    }
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        val currentThread = Thread.currentThread()
+        glThread = currentThread
+        GlCheck.setGlThread(currentThread)
         releaseGlObjects()
         if (undoExecutor.isShutdown) {
             undoExecutor = Executors.newSingleThreadExecutor()

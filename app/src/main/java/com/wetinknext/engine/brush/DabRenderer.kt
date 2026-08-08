@@ -1,6 +1,7 @@
 package com.wetinknext.engine.brush
 
 import android.opengl.GLES30
+import com.wetinknext.engine.gl.GlCheck
 import com.wetinknext.engine.gl.GlProgram
 import com.wetinknext.engine.gl.RenderTarget
 import com.wetinknext.engine.gl.ShaderLib
@@ -19,6 +20,7 @@ class DabRenderer(private val maxDabs: Int) {
     private val blendController = BlendController()
 
     fun create() {
+        GlCheck.checkOnGlThread()
         release()
         uploadedDabCount = 0
         program = GlProgram(ShaderLib.dabVertex, ShaderLib.dabFragment)
@@ -109,6 +111,7 @@ class DabRenderer(private val maxDabs: Int) {
     }
 
     fun release() {
+        GlCheck.checkOnGlThread()
         program?.release()
         program = null
         uploadedDabCount = 0

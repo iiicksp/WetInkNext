@@ -4,6 +4,21 @@ import android.opengl.GLES30
 
 /** GL error checks intended for setup boundaries, never the render hot path. */
 object GlCheck {
+    @Volatile
+    private var glThread: Thread? = null
+
+    fun setGlThread(thread: Thread) {
+        glThread = thread
+    }
+
+    fun checkOnGlThread() {
+        val current = Thread.currentThread()
+        val expected = glThread
+        check(current === expected) {
+            "GL resource accessed outside GLSurfaceView render thread: current=$current, expected=$expected"
+        }
+    }
+
     fun noError(label: String) {
         val error = GLES30.glGetError()
         check(error == GLES30.GL_NO_ERROR) { "$label: GL error 0x${error.toString(16)}" }
