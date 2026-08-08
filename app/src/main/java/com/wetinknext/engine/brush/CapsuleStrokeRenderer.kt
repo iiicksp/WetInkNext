@@ -34,6 +34,15 @@ class CapsuleStrokeRenderer(
 
     private var uCanvasToClip = -1
     private var uColorLinear = -1
+    private var uCanvasSize = -1
+    private var uGrainTex = -1
+    private var uGrainScale = -1
+    private var uGrainActive = -1
+    private var uGrainCanvasLocked = -1
+
+    private var grainTextureId = 0
+    private var grainScale = 1f
+    private var grainCanvasLocked = true
 
     /**
      * Формат:
@@ -86,12 +95,35 @@ class CapsuleStrokeRenderer(
             currentProgram.id,
             "uColorLinear",
         )
+        uCanvasSize = GLES30.glGetUniformLocation(
+            currentProgram.id,
+            "uCanvasSize",
+        )
+        uGrainTex = GLES30.glGetUniformLocation(
+            currentProgram.id,
+            "uGrainTex",
+        )
+        uGrainScale = GLES30.glGetUniformLocation(
+            currentProgram.id,
+            "uGrainScale",
+        )
+        uGrainActive = GLES30.glGetUniformLocation(
+            currentProgram.id,
+            "uGrainActive",
+        )
+        uGrainCanvasLocked = GLES30.glGetUniformLocation(
+            currentProgram.id,
+            "uGrainCanvasLocked",
+        )
 
         check(uCanvasToClip >= 0) {
             "Capsule shader uniform uCanvasToClip is missing"
         }
         check(uColorLinear >= 0) {
             "Capsule shader uniform uColorLinear is missing"
+        }
+        check(uCanvasSize >= 0) {
+            "Capsule shader uniform uCanvasSize is missing"
         }
 
         val corners = floatArrayOf(
@@ -380,6 +412,36 @@ class CapsuleStrokeRenderer(
             colorLinear[2].coerceIn(0f, 1f),
         )
 
+        GLES30.glUniform2f(
+            uCanvasSize,
+            width.toFloat(),
+            height.toFloat(),
+        )
+
+        GLES30.glUniform1f(
+            uGrainScale,
+            grainScale,
+        )
+
+        GLES30.glUniform1i(
+            uGrainActive,
+            if (grainTextureId != 0) 1 else 0,
+        )
+
+        GLES30.glUniform1i(
+            uGrainCanvasLocked,
+            if (grainCanvasLocked) 1 else 0,
+        )
+
+        if (grainTextureId != 0) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+            GLES30.glBindTexture(
+                GLES30.GL_TEXTURE_2D,
+                grainTextureId,
+            )
+            GLES30.glUniform1i(uGrainTex, 2)
+        }
+
         /*
          * FloatBuffer должен содержать только передаваемый диапазон.
          * glBufferSubData прочитает remaining() элементов.
@@ -435,6 +497,16 @@ class CapsuleStrokeRenderer(
             count,
         )
 
+        if (grainTextureId != 0) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+            GLES30.glBindTexture(
+                GLES30.GL_TEXTURE_2D,
+                0,
+            )
+        }
+
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+
         GLES30.glBindBuffer(
             GLES30.GL_ARRAY_BUFFER,
             0,
@@ -479,6 +551,16 @@ class CapsuleStrokeRenderer(
         )
     }
 
+    fun setGrainTexture(
+        textureId: Int,
+        scale: Float,
+        canvasLocked: Boolean,
+    ) {
+        grainTextureId = textureId
+        grainScale = scale.coerceAtLeast(0.0001f)
+        grainCanvasLocked = canvasLocked
+    }
+
     /**
      * Все GL-объекты удаляются только на GL-потоке.
      */
@@ -516,6 +598,12 @@ class CapsuleStrokeRenderer(
 
         uCanvasToClip = -1
         uColorLinear = -1
+        uCanvasSize = -1
+        uGrainTex = -1
+        uGrainScale = -1
+        uGrainActive = -1
+        uGrainCanvasLocked = -1
+        grainTextureId = 0
 
         segmentCount = 0
         uploadedSegmentCount = 0

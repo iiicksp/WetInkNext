@@ -103,7 +103,9 @@ object ShaderLib {
         layout(location = 1) in vec3 iA;        // x, y, radius (начало сегмента)
         layout(location = 2) in vec3 iB;        // x, y, radius (конец сегмента)
         uniform mat4 uCanvasToClip;
+        uniform vec2 uCanvasSize;
         out vec2 vPos;
+        out vec2 vCanvasUv;
         flat out vec3 vA;
         flat out vec3 vB;
         void main() {
@@ -112,6 +114,7 @@ object ShaderLib {
             vec2 hi = max(iA.xy + iA.z, iB.xy + iB.z) + 2.0;
             vec2 p = mix(lo, hi, aCorner * 0.5 + 0.5);
             vPos = p;
+            vCanvasUv = p / uCanvasSize;
             vA = iA;
             vB = iB;
             gl_Position = uCanvasToClip * vec4(p, 0.0, 1.0);
@@ -127,9 +130,14 @@ object ShaderLib {
     const val capsuleFragment = """#version 300 es
         precision highp float;
         in vec2 vPos;
+        in vec2 vCanvasUv;
         flat in vec3 vA;
         flat in vec3 vB;
         uniform vec3 uColorLinear;
+        uniform sampler2D uGrainTex;
+        uniform int uGrainActive;
+        uniform float uGrainScale;
+        uniform int uGrainCanvasLocked;
         out vec4 fragColor;
 
         float sdRoundCone(vec2 p, vec2 a, vec2 b, float r1, float r2) {
@@ -164,7 +172,15 @@ object ShaderLib {
             float w = max(fwidth(d), 1e-4);
             float cov = 1.0 - smoothstep(-w, w, d);
             if (cov <= 0.0) discard;
-            fragColor = vec4(uColorLinear * cov, cov);
+
+            float grain = 1.0;
+            if (uGrainActive == 1) {
+                vec2 uv = vCanvasUv * max(uGrainScale, 0.0001);
+                grain = texture(uGrainTex, uv).r;
+            }
+
+            float finalAlpha = cov * grain;
+            fragColor = vec4(uColorLinear * finalAlpha, finalAlpha);
         }
     """
 
