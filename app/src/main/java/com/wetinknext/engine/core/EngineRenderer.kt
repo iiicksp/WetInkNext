@@ -4,6 +4,8 @@ import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.view.MotionEvent
 import com.wetinknext.engine.brush.BrushSettings
+import com.wetinknext.engine.brush.BrushTexture
+import com.wetinknext.engine.brush.LoadedBrushTexture
 import com.wetinknext.engine.brush.BrushRenderMode
 import com.wetinknext.engine.brush.CapsuleEmitter
 import com.wetinknext.engine.brush.CapsuleStrokeRenderer
@@ -47,6 +49,8 @@ class EngineRenderer(
     private var compositor: Compositor? = null
     private var dabRenderer: DabRenderer? = null
     private var capsuleRenderer: CapsuleStrokeRenderer? = null
+    private var grainTexture: BrushTexture? = null
+    private var grainPath: String? = null
     private val strokeTarget = RenderTarget()
     private val canvasToFboMatrix = FloatArray(16)
     private val canvasToClipMatrix = FloatArray(16)
@@ -272,6 +276,9 @@ class EngineRenderer(
         undoManager.clear()
         dabRenderer?.release()
         dabRenderer = null
+        grainTexture?.release()
+        grainTexture = null
+        grainPath = null
         capsuleRenderer?.release()
         capsuleRenderer = null
         strokeBlitter?.release()
@@ -441,6 +448,61 @@ class EngineRenderer(
                 ready = layerStack.canvasWidth > 0 && layerStack.canvasHeight > 0,
             ),
         )
+    }
+
+    /**
+     * Вызывается только через GLSurfaceView.queueEvent,
+     * то есть на GL-потоке с current EGL context.
+     */
+    fun applyLoadedGrain(
+        loaded: LoadedBrushTexture,
+        scale: Float,
+        canvasLocked: Boolean,
+        depth: Float,
+        contrast: Float,
+    ) {
+        val renderer = capsuleRenderer
+        if (renderer == null) {
+            loaded.bitmap.recycle()
+            return
+        }
+
+        val oldTexture = grainTexture
+        val newTexture = BrushTexture()
+
+        try {
+            // Bitmap читается здесь только на GL-потоке во время upload.
+            newTexture.createFromBitmap(loaded.bitmap)
+
+            renderer.setGrainTexture(
+                textureId = newTexture.textureId,
+                scale = scale,
+                canvasLocked = canvasLocked,
+                depth = depth,
+                contrast = contrast,
+            )
+
+            grainTexture = newTexture
+            grainPath = loaded.path
+
+            oldTexture?.release()
+        } catch (error: Throwable) {
+            newTexture.release()
+            throw error
+        } finally {
+            // После glTexImage2D bitmap больше не нужен.
+            if (!loaded.bitmap.isRecycled) {
+                loaded.bitmap.recycle()
+            }
+        }
+    }
+
+    fun clearGrainTexture() {
+        capsuleRenderer?.clearGrainTexture()
+
+        grainTexture?.release()
+        grainTexture = null
+        grainPath = null
     }
 
     private fun nextLayerName(): String = "Слой ${layerStack.count + 1}"

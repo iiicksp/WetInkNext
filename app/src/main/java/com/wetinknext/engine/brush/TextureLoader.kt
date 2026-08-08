@@ -13,7 +13,8 @@ data class LoadedBrushTexture(
 
 class TextureLoader(
     private val context: Context,
-    private val executor: ExecutorService = Executors.newSingleThreadExecutor(),
+    private val executor: ExecutorService =
+        Executors.newSingleThreadExecutor(),
 ) {
     fun loadAsync(
         path: String,
@@ -22,18 +23,7 @@ class TextureLoader(
     ) {
         executor.execute {
             try {
-                val bitmap = when {
-                    path.startsWith("asset:") -> {
-                        val assetPath = path.removePrefix("asset:")
-                        context.assets.open(assetPath).use { input ->
-                            BitmapFactory.decodeStream(input)
-                        }
-                    }
-
-                    else -> {
-                        BitmapFactory.decodeFile(path)
-                    }
-                } ?: error("Unable to decode brush texture: $path")
+                val bitmap = decode(path)
 
                 onLoaded(
                     LoadedBrushTexture(
@@ -41,9 +31,25 @@ class TextureLoader(
                         bitmap = bitmap,
                     ),
                 )
-            } catch (t: Throwable) {
-                onError(t)
+            } catch (error: Throwable) {
+                onError(error)
             }
+        }
+    }
+
+    private fun decode(path: String): Bitmap {
+        val bitmap = if (path.startsWith("asset:")) {
+            val assetPath = path.removePrefix("asset:")
+
+            context.assets.open(assetPath).use { input ->
+                BitmapFactory.decodeStream(input)
+            }
+        } else {
+            BitmapFactory.decodeFile(path)
+        }
+
+        return requireNotNull(bitmap) {
+            "Cannot decode brush texture: $path"
         }
     }
 

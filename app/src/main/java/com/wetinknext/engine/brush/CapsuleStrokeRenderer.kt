@@ -36,13 +36,17 @@ class CapsuleStrokeRenderer(
     private var uColorLinear = -1
     private var uCanvasSize = -1
     private var uGrainTex = -1
-    private var uGrainScale = -1
     private var uGrainActive = -1
+    private var uGrainScale = -1
     private var uGrainCanvasLocked = -1
+    private var uTextureDepth = -1
+    private var uTextureContrast = -1
 
     private var grainTextureId = 0
     private var grainScale = 1f
     private var grainCanvasLocked = true
+    private var textureDepth = 1f
+    private var textureContrast = 1f
 
     /**
      * Формат:
@@ -114,6 +118,14 @@ class CapsuleStrokeRenderer(
         uGrainCanvasLocked = GLES30.glGetUniformLocation(
             currentProgram.id,
             "uGrainCanvasLocked",
+        )
+        uTextureDepth = GLES30.glGetUniformLocation(
+            currentProgram.id,
+            "uTextureDepth",
+        )
+        uTextureContrast = GLES30.glGetUniformLocation(
+            currentProgram.id,
+            "uTextureContrast",
         )
 
         check(uCanvasToClip >= 0) {
@@ -433,6 +445,16 @@ class CapsuleStrokeRenderer(
             if (grainCanvasLocked) 1 else 0,
         )
 
+        GLES30.glUniform1f(
+            uTextureDepth,
+            textureDepth,
+        )
+
+        GLES30.glUniform1f(
+            uTextureContrast,
+            textureContrast,
+        )
+
         if (grainTextureId != 0) {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
             GLES30.glBindTexture(
@@ -555,10 +577,22 @@ class CapsuleStrokeRenderer(
         textureId: Int,
         scale: Float,
         canvasLocked: Boolean,
+        depth: Float,
+        contrast: Float,
     ) {
         grainTextureId = textureId
         grainScale = scale.coerceAtLeast(0.0001f)
         grainCanvasLocked = canvasLocked
+        textureDepth = depth.coerceIn(0f, 1f)
+        textureContrast = contrast.coerceIn(0f, 2f)
+    }
+
+    fun clearGrainTexture() {
+        grainTextureId = 0
+        grainScale = 1f
+        grainCanvasLocked = true
+        textureDepth = 1f
+        textureContrast = 1f
     }
 
     /**
@@ -603,6 +637,8 @@ class CapsuleStrokeRenderer(
         uGrainScale = -1
         uGrainActive = -1
         uGrainCanvasLocked = -1
+        uTextureDepth = -1
+        uTextureContrast = -1
         grainTextureId = 0
 
         segmentCount = 0

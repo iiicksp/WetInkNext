@@ -138,6 +138,8 @@ object ShaderLib {
         uniform int uGrainActive;
         uniform float uGrainScale;
         uniform int uGrainCanvasLocked;
+        uniform float uTextureDepth;
+        uniform float uTextureContrast;
         out vec4 fragColor;
 
         float sdRoundCone(vec2 p, vec2 a, vec2 b, float r1, float r2) {
@@ -176,7 +178,10 @@ object ShaderLib {
             float grain = 1.0;
             if (uGrainActive == 1) {
                 vec2 uv = vCanvasUv * max(uGrainScale, 0.0001);
-                grain = texture(uGrainTex, uv).r;
+                float val = texture(uGrainTex, uv).r;
+                // Применяем контраст и глубину
+                val = (val - 0.5) * uTextureContrast + 0.5;
+                grain = mix(1.0, val, uTextureDepth);
             }
 
             float finalAlpha = cov * grain;

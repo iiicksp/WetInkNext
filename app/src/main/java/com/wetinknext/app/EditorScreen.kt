@@ -53,6 +53,14 @@ fun EditorScreen() {
                     view.onEditorStateChange = { uiState = it }
                     surface = view
                     view.requestState()
+                    
+                    view.loadGrainTexture(
+                        path = "asset:brush/grain_test.png",
+                        scale = 8f,
+                        canvasLocked = true,
+                        depth = 0.35f,
+                        contrast = 1.2f,
+                    )
                 }
             },
         )

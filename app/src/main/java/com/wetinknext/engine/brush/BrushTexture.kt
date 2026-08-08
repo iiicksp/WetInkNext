@@ -73,12 +73,12 @@ class BrushTexture {
         GLES30.glTexParameteri(
             GLES30.GL_TEXTURE_2D,
             GLES30.GL_TEXTURE_WRAP_S,
-            GLES30.GL_REPEAT, // Для текстуры зерна важен repeat
+            GLES30.GL_REPEAT,
         )
         GLES30.glTexParameteri(
             GLES30.GL_TEXTURE_2D,
             GLES30.GL_TEXTURE_WRAP_T,
-            GLES30.GL_REPEAT, // Для текстуры зерна важен repeat
+            GLES30.GL_REPEAT,
         )
 
         GLES30.glPixelStorei(
