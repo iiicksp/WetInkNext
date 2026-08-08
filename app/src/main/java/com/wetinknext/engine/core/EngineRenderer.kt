@@ -47,7 +47,7 @@ class EngineRenderer(
     private var caps: GlCaps? = null
     private val layerStack = LayerStack()
     private val undoManager = UndoManager()
-    private val undoExecutor = Executors.newSingleThreadExecutor()
+    private var undoExecutor = Executors.newSingleThreadExecutor()
     private val tileCompressor = DeflateTileCompressor()
     private val pendingUndoEntries = ConcurrentLinkedQueue<UndoEntry>()
 
@@ -194,6 +194,9 @@ class EngineRenderer(
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         releaseGlObjects()
+        if (undoExecutor.isShutdown) {
+            undoExecutor = Executors.newSingleThreadExecutor()
+        }
         val nextCaps = GlCaps.query()
         caps = nextCaps
         layerStack.create(nextCaps, documentWidth, documentHeight)
@@ -290,6 +293,7 @@ class EngineRenderer(
         stampEmitter.reset()
         dabBuffer.clear()
         undoManager.clear()
+        pendingUndoEntries.clear()
         dabRenderer?.release()
         dabRenderer = null
         grainTexture?.release()
@@ -304,7 +308,8 @@ class EngineRenderer(
         compositor = null
         geometry?.release()
         geometry = null
-        undoExecutor.shutdown()
+        undoExecutor.shutdownNow()
+        pendingUndoEntries.clear()
         strokeTarget.release()
         layerStack.release()
         caps = null
