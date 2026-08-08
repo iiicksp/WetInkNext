@@ -221,7 +221,13 @@ class CapsuleEmitter(
 
         // Принудительно завершаем кривую, используя последнюю точку как P3
         if (pointsInWindow >= 2 && settings.smoothing > 1e-4f) {
-            interpolate(p0x, p0y, p0r, p1x, p1y, p1r, p2x, p2y, p2r, p2x, p2y, p2r, out)
+            interpolate(
+                p0x, p0y, p0r,
+                p1x, p1y, p1r,
+                p2x, p2y, p2r,
+                p2x, p2y, p2r,
+                out,
+            )
         }
 
         active = false

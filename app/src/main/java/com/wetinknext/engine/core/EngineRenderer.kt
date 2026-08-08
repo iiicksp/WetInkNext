@@ -89,6 +89,7 @@ class EngineRenderer(
     private var strokeActive = false
     private var pendingBrush: BrushSettings? = null
     private var strokeBlitter: StrokeBlitter? = null
+    private var capsulePreviewInitialized = false
     private val cancelRequested = AtomicBoolean(false)
 
     /** Assigned by PaintSurfaceView; invoked on the GL thread. */
@@ -400,6 +401,7 @@ class EngineRenderer(
         dabBuffer.clear()
         capsuleEmitter.reset()
         capsuleRenderer?.clearStrokeData()
+        capsulePreviewInitialized = false
         if (strokeTarget.framebufferId != 0) {
             strokeTarget.clear(0f, 0f, 0f, 0f)
         }
@@ -446,16 +448,17 @@ class EngineRenderer(
     private fun renderCapsulePreview() {
         val renderer = capsuleRenderer ?: return
 
-        // Сейчас используем drawAll, потому что strokeTarget очищается
-        // каждый кадр. Это медленнее, но корректно и без старых mesh-артефактов.
-        strokeTarget.clear(
-            red = 0f,
-            green = 0f,
-            blue = 0f,
-            alpha = 0f,
-        )
+        if (!capsulePreviewInitialized) {
+            strokeTarget.clear(
+                red = 0f,
+                green = 0f,
+                blue = 0f,
+                alpha = 0f,
+            )
+            capsulePreviewInitialized = true
+        }
 
-        renderer.drawAll(
+        renderer.drawPending(
             target = strokeTarget,
             width = layerStack.canvasWidth,
             height = layerStack.canvasHeight,

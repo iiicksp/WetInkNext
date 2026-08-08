@@ -44,6 +44,26 @@ class RibbonShortStrokeTest {
         assertTrue("start cap ушёл внутрь штриха", outline.startCap.any { it.x < -0.5f })
     }
 
+    @Test
+    fun finishFlushesTheLastInterpolatedSection() {
+        val settings = BrushSettings(
+            renderMode = BrushRenderMode.RIBBON,
+            baseRadiusPx = 10f,
+            smoothing = 0.5f,
+            streamline = 0f,
+        )
+        val emitter = CapsuleEmitter(settings)
+        val renderer = CapsuleStrokeRenderer(maxSegments = 128)
+
+        emitter.begin(batch(InputAction.DOWN, 0f, 0f, 0L), renderer)
+        emitter.append(batch(InputAction.MOVE, 100f, 0f, 16_000_000L), renderer)
+        emitter.append(batch(InputAction.MOVE, 200f, 30f, 32_000_000L), renderer)
+        emitter.finish(renderer, cancel = false)
+
+        assertTrue(emitter.hasStroke)
+        assertTrue(renderer.segmentCount > 1)
+    }
+
     private fun batch(action: InputAction, x: Float, y: Float, t: Long) = InputBatch(8).apply {
         begin(action)
         addSample(x, y, .5f, 0f, 0f, 0f, t, 0, PointerTool.STYLUS, false)
