@@ -224,6 +224,7 @@ class EngineRenderer(
                 canvasToFbo = canvasToFboMatrix,
                 dabs = dabBuffer,
                 colorLinear = strokeColorLinear,
+                blendPolicy = brushSettings.blendPolicy,
             )
         }
 
@@ -316,6 +317,16 @@ class EngineRenderer(
                                 )
                             } else {
                                 stampEmitter.begin(batch, dabBuffer)
+                                strokeTarget.clear(0f, 0f, 0f, 0f)
+                                dabRenderer?.drawInto(
+                                    target = strokeTarget,
+                                    width = layerStack.canvasWidth,
+                                    height = layerStack.canvasHeight,
+                                    canvasToFbo = canvasToFboMatrix,
+                                    dabs = dabBuffer,
+                                    colorLinear = strokeColorLinear,
+                                    blendPolicy = brushSettings.blendPolicy,
+                                )
                             }
                         }
                     }
@@ -328,6 +339,16 @@ class EngineRenderer(
                             )
                         } else {
                             stampEmitter.append(batch, dabBuffer)
+                            strokeTarget.clear(0f, 0f, 0f, 0f)
+                            dabRenderer?.drawInto(
+                                target = strokeTarget,
+                                width = layerStack.canvasWidth,
+                                height = layerStack.canvasHeight,
+                                canvasToFbo = canvasToFboMatrix,
+                                dabs = dabBuffer,
+                                colorLinear = strokeColorLinear,
+                                blendPolicy = brushSettings.blendPolicy,
+                            )
                         }
                     }
 
@@ -378,6 +399,7 @@ class EngineRenderer(
             canvasToFbo = canvasToFboMatrix,
             dabs = dabBuffer,
             colorLinear = strokeColorLinear,
+            blendPolicy = brushSettings.blendPolicy,
         )
         layer.version++
         val afterTiles = TileSnapshotCapture.capture(layer.target, dirtyBounds)
@@ -526,6 +548,7 @@ class EngineRenderer(
             height = layerStack.canvasHeight,
             canvasToClip = canvasToFboMatrix,
             colorLinear = strokeColorLinear,
+            blendPolicy = brushSettings.blendPolicy,
         )
     }
 
@@ -554,6 +577,7 @@ class EngineRenderer(
             height = layerStack.canvasHeight,
             canvasToClip = canvasToFboMatrix,
             colorLinear = strokeColorLinear,
+            blendPolicy = brushSettings.blendPolicy,
         )
 
         val before = TileSnapshotCapture.capture(

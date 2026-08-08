@@ -34,6 +34,7 @@ class CapsuleStrokeRenderer(
 
     private var uCanvasToClip = -1
     private var uColorLinear = -1
+    private val blendController = BlendController()
     private var uCanvasSize = -1
     private var uGrainTex = -1
     private var uGrainActive = -1
@@ -306,6 +307,7 @@ class CapsuleStrokeRenderer(
         height: Int,
         canvasToClip: FloatArray,
         colorLinear: FloatArray,
+        blendPolicy: BlendPolicy,
     ) {
         val first = uploadedSegmentCount
         val count = segmentCount - uploadedSegmentCount
@@ -320,6 +322,7 @@ class CapsuleStrokeRenderer(
             colorLinear = colorLinear,
             firstSegment = first,
             count = count,
+            blendPolicy = blendPolicy,
         )
 
         if (drawn) {
@@ -338,6 +341,7 @@ class CapsuleStrokeRenderer(
         height: Int,
         canvasToClip: FloatArray,
         colorLinear: FloatArray,
+        blendPolicy: BlendPolicy,
     ) {
         if (segmentCount <= 0) return
 
@@ -349,6 +353,7 @@ class CapsuleStrokeRenderer(
             colorLinear = colorLinear,
             firstSegment = 0,
             count = segmentCount,
+            blendPolicy = blendPolicy,
         )
     }
 
@@ -366,6 +371,7 @@ class CapsuleStrokeRenderer(
         colorLinear: FloatArray,
         firstSegment: Int,
         count: Int,
+        blendPolicy: BlendPolicy,
     ): Boolean {
         val currentProgram = program ?: return false
 
@@ -392,20 +398,7 @@ class CapsuleStrokeRenderer(
 
         GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
 
-        /*
-         * Shader output:
-         *   rgb = linearColor * coverage
-         *   a   = coverage
-         *
-         * GL_MAX объединяет покрытия без сложения.
-         * Повторное попадание одного и того же пикселя не делает его темнее.
-         */
-        GLES30.glEnable(GLES30.GL_BLEND)
-        GLES30.glBlendEquation(GLES30.GL_MAX)
-        GLES30.glBlendFunc(
-            GLES30.GL_ONE,
-            GLES30.GL_ONE,
-        )
+        blendController.begin(blendPolicy)
 
         currentProgram.use()
 
@@ -535,16 +528,7 @@ class CapsuleStrokeRenderer(
         )
         GLES30.glBindVertexArray(0)
 
-        /*
-         * Обязательно вернуть состояние:
-         * Compositor и обычные слои используют FUNC_ADD.
-         */
-        GLES30.glBlendEquation(GLES30.GL_FUNC_ADD)
-        GLES30.glBlendFunc(
-            GLES30.GL_ONE,
-            GLES30.GL_ONE_MINUS_SRC_ALPHA,
-        )
-        GLES30.glDisable(GLES30.GL_BLEND)
+        blendController.end()
 
         GLES30.glBindFramebuffer(
             GLES30.GL_FRAMEBUFFER,

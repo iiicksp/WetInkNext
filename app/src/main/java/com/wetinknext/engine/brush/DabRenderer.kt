@@ -15,6 +15,7 @@ class DabRenderer(private val maxDabs: Int) {
     private var instanceBufferId = 0
     private var uCanvasToClip = -1
     private var uColorLinear = -1
+    private val blendController = BlendController()
 
     fun create() {
         release()
@@ -75,6 +76,7 @@ class DabRenderer(private val maxDabs: Int) {
         canvasToFbo: FloatArray,
         dabs: DabBuffer,
         colorLinear: FloatArray,
+        blendPolicy: BlendPolicy,
     ) {
         if (dabs.count == 0) return
         val currentProgram = program ?: return
@@ -82,9 +84,7 @@ class DabRenderer(private val maxDabs: Int) {
 
         target.bind()
         GLES30.glViewport(0, 0, width, height)
-        GLES30.glEnable(GLES30.GL_BLEND)
-        GLES30.glBlendEquation(GLES30.GL_FUNC_ADD)
-        GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        blendController.begin(blendPolicy)
 
         currentProgram.use()
         GLES30.glUniformMatrix4fv(uCanvasToClip, 1, false, canvasToFbo, 0)
@@ -102,7 +102,7 @@ class DabRenderer(private val maxDabs: Int) {
         GLES30.glDrawArraysInstanced(GLES30.GL_TRIANGLE_STRIP, 0, 4, dabs.count)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         GLES30.glBindVertexArray(0)
-        GLES30.glDisable(GLES30.GL_BLEND)
+        blendController.end()
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
     }
 
