@@ -28,6 +28,7 @@ class CapsuleEmitter(
 ) {
     private val stabilizer = Stabilizer()
     private val pressureFilter = PressureFilter()
+    private val resolvedDab = ResolvedDab()
 
     private var active = false
     private var pointerId = -1
@@ -134,7 +135,8 @@ class CapsuleEmitter(
         val x = stabilizer.x
         val y = stabilizer.y
         val filteredPressure = pressureFilter.filter(sample.timestampNanos, sample.pressure)
-        val radius = radiusForPressure(filteredPressure)
+        BrushDynamics.resolve(settings, filteredPressure, sample.tiltX, sample.tiltY, resolvedDab)
+        val radius = resolvedDab.radius
 
         lastX = x
         lastY = y
@@ -190,7 +192,8 @@ class CapsuleEmitter(
             val x = stabilizer.x
             val y = stabilizer.y
             val filteredPressure = pressureFilter.filter(sample.timestampNanos, sample.pressure)
-            val radius = radiusForPressure(filteredPressure)
+            BrushDynamics.resolve(settings, filteredPressure, sample.tiltX, sample.tiltY, resolvedDab)
+            val radius = resolvedDab.radius
 
             emitPoint(
                 x = x,
@@ -327,36 +330,6 @@ class CapsuleEmitter(
             prevY = y
             prevR = r
         }
-    }
-
-    /**
-     * Радиус кисти.
-     *
-     * baseRadiusPx в текущем коде является радиусом,
-     * поэтому UI-диаметр должен конвертироваться в EngineRenderer
-     * до попадания сюда.
-     */
-    private fun radiusForPressure(pressure: Float): Float {
-        val normalized = pressure.coerceIn(0f, 1f)
-
-        val shapedPressure =
-            if (settings.pressureGamma > 0f) {
-                normalized.pow(settings.pressureGamma)
-            } else {
-                normalized
-            }
-
-        val sizeFactor =
-            if (settings.pressureToSize) {
-                settings.minSizeRatio +
-                    (1f - settings.minSizeRatio) * shapedPressure
-            } else {
-                1f
-            }
-
-        return (
-            settings.baseRadiusPx * sizeFactor
-        ).coerceAtLeast(MIN_RADIUS_PX)
     }
 
     /**
