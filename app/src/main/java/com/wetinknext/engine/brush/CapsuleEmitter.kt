@@ -37,6 +37,13 @@ class CapsuleEmitter(
     private var lastY = 0f
     private var lastRadius = 0f
 
+    // Окно точек для интерполяции P0, P1, P2, P3
+    private var p0x = 0f; private var p0y = 0f; private var p0r = 0f
+    private var p1x = 0f; private var p1y = 0f; private var p1r = 0f
+    private var p2x = 0f; private var p2y = 0f; private var p2r = 0f
+    private var p3x = 0f; private var p3y = 0f; private var p3r = 0f
+    private var pointsInWindow = 0
+
     private var emittedSegments = 0
 
     var hasStroke: Boolean = false
@@ -76,6 +83,8 @@ class CapsuleEmitter(
         lastX = 0f
         lastY = 0f
         lastRadius = 0f
+
+        pointsInWindow = 0
 
         emittedSegments = 0
         hasStroke = false
@@ -124,13 +133,20 @@ class CapsuleEmitter(
 
         val x = stabilizer.x
         val y = stabilizer.y
-        val radius = radiusForPressure(sample.pressure)
+        val filteredPressure = pressureFilter.filter(sample.timestampNanos, sample.pressure)
+        val radius = radiusForPressure(filteredPressure)
 
         lastX = x
         lastY = y
         lastRadius = radius
         hasLastPoint = true
         hasStroke = true
+
+        // Инициализация окна
+        p0x = x; p0y = y; p0r = radius
+        p1x = x; p1y = y; p1r = radius
+        p2x = x; p2y = y; p2r = radius
+        pointsInWindow = 1
 
         // Вырожденный сегмент: круглый dab/tap.
         out.addSegment(
@@ -173,7 +189,8 @@ class CapsuleEmitter(
 
             val x = stabilizer.x
             val y = stabilizer.y
-            val radius = radiusForPressure(sample.pressure)
+            val filteredPressure = pressureFilter.filter(sample.timestampNanos, sample.pressure)
+            val radius = radiusForPressure(filteredPressure)
 
             emitPoint(
                 x = x,
@@ -202,6 +219,11 @@ class CapsuleEmitter(
             return
         }
 
+        // Принудительно завершаем кривую, используя последнюю точку как P3
+        if (pointsInWindow >= 2 && settings.smoothing > 1e-4f) {
+            interpolate(p0x, p0y, p0r, p1x, p1y, p1r, p2x, p2y, p2r, p2x, p2y, p2r, out)
+        }
+
         active = false
         pointerId = -1
     }
@@ -212,58 +234,93 @@ class CapsuleEmitter(
         radius: Float,
         out: CapsuleStrokeRenderer,
     ) {
-        if (!hasLastPoint) {
-            lastX = x
-            lastY = y
-            lastRadius = radius
-            hasLastPoint = true
-            hasStroke = true
-
-            out.addSegment(
-                x0 = x,
-                y0 = y,
-                radius0 = radius,
-                x1 = x,
-                y1 = y,
-                radius1 = radius,
-            )
-            emittedSegments++
-            includeBounds(x, y, radius)
-            return
-        }
-
         val dx = x - lastX
         val dy = y - lastY
         val distance = hypot(dx, dy)
 
-        /*
-         * Не создаём пачку почти нулевых капсул от повторяющихся
-         * historical/current samples. Но последующая капсула всё равно
-         * протянется от lastPoint до следующего реального point.
-         */
         if (distance < minimumPointDistance()) {
             return
         }
 
-        out.addSegment(
-            x0 = lastX,
-            y0 = lastY,
-            radius0 = lastRadius,
-            x1 = x,
-            y1 = y,
-            radius1 = radius,
-        )
-        emittedSegments++
+        if (settings.smoothing <= 1e-4f) {
+            // Raw mode: прямые сегменты без задержки на окно
+            out.addSegment(lastX, lastY, lastRadius, x, y, radius)
+            emittedSegments++
+            totalLength += distance
+            includeBounds(lastX, lastY, lastRadius)
+            includeBounds(x, y, radius)
+        } else {
+            // Interpolated mode: Catmull-Rom через окно
+            when (pointsInWindow) {
+                1 -> {
+                    p2x = x; p2y = y; p2r = radius
+                    pointsInWindow = 2
+                }
+                2 -> {
+                    p3x = x; p3y = y; p3r = radius
+                    interpolate(p0x, p0y, p0r, p1x, p1y, p1r, p2x, p2y, p2r, p3x, p3y, p3r, out)
+                    // Сдвиг окна
+                    p0x = p1x; p0y = p1y; p0r = p1r
+                    p1x = p2x; p1y = p2y; p1r = p2r
+                    p2x = p3x; p2y = p3y; p2r = p3r
+                }
+            }
+        }
 
-        totalLength += distance
         hasStroke = true
-
-        includeBounds(lastX, lastY, lastRadius)
-        includeBounds(x, y, radius)
-
         lastX = x
         lastY = y
         lastRadius = radius
+    }
+
+    /**
+     * Адаптивная интерполяция сегмента P1-P2 с использованием P0 и P3 как контрольных точек.
+     */
+    private fun interpolate(
+        p0x: Float, p0y: Float, p0r: Float,
+        p1x: Float, p1y: Float, p1r: Float,
+        p2x: Float, p2y: Float, p2r: Float,
+        p3x: Float, p3y: Float, p3r: Float,
+        out: CapsuleStrokeRenderer
+    ) {
+        val dist = hypot(p2x - p1x, p2y - p1y)
+        if (dist < 1e-4f) return
+
+        // Вычисляем контрольные точки для кубической кривой Безье (Catmull-Rom -> Bezier)
+        val c1x = p1x + (p2x - p0x) / 6f
+        val c1y = p1y + (p2y - p0y) / 6f
+        val c2x = p2x - (p3x - p1x) / 6f
+        val c2y = p2y - (p3y - p1y) / 6f
+
+        // Адаптивное количество шагов: примерно каждые 0.25..0.5 радиуса
+        val avgRadius = (p1r + p2r) * 0.5f
+        val stepPx = max(1f, avgRadius * INTERPOLATION_STEP_RATIO)
+        val steps = max(1, (dist / stepPx).toInt().coerceAtMost(MAX_INTERPOLATION_STEPS))
+
+        var prevX = p1x
+        var prevY = p1y
+        var prevR = p1r
+
+        for (i in 1..steps) {
+            val t = i.toFloat() / steps
+            val mt = 1f - t
+            
+            // Кубическое Безье для позиции
+            val x = mt * mt * mt * p1x + 3f * mt * mt * t * c1x + 3f * mt * t * t * c2x + t * t * t * p2x
+            val y = mt * mt * mt * p1y + 3f * mt * mt * t * c1y + 3f * mt * t * t * c2y + t * t * t * p2y
+            
+            // Линейная интерполяция радиуса
+            val r = p1r + (p2r - p1r) * t
+
+            out.addSegment(prevX, prevY, prevR, x, y, r)
+            emittedSegments++
+            totalLength += hypot(x - prevX, y - prevY)
+            includeBounds(x, y, r)
+
+            prevX = x
+            prevY = y
+            prevR = r
+        }
     }
 
     /**
@@ -346,5 +403,8 @@ class CapsuleEmitter(
         private const val MIN_POINT_DISTANCE_MIN = 0.05f
         private const val MAX_POINT_DISTANCE = 32f
         private const val POINT_STEP_RADIUS_RATIO = 0.08f
+
+        private const val INTERPOLATION_STEP_RATIO = 0.4f
+        private const val MAX_INTERPOLATION_STEPS = 64
     }
 }
