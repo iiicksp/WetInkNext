@@ -94,6 +94,7 @@ class EngineRenderer(
     private var pendingBrush: BrushSettings? = null
     private var strokeBlitter: StrokeBlitter? = null
     private var capsulePreviewInitialized = false
+    private var stampPreviewInitialized = false
     private val cancelRequested = AtomicBoolean(false)
 
     /** Assigned by PaintSurfaceView; invoked on the GL thread. */
@@ -215,17 +216,8 @@ class EngineRenderer(
 
         if (strokeActive && brushSettings.renderMode == BrushRenderMode.RIBBON) {
             renderCapsulePreview()
-        } else if (strokeActive && dabBuffer.count > 0) {
-            strokeTarget.clear(0f, 0f, 0f, 0f)
-            dabRenderer?.drawInto(
-                target = strokeTarget,
-                width = layerStack.canvasWidth,
-                height = layerStack.canvasHeight,
-                canvasToFbo = canvasToFboMatrix,
-                dabs = dabBuffer,
-                colorLinear = strokeColorLinear,
-                blendPolicy = brushSettings.blendPolicy,
-            )
+        } else if (strokeActive && brushSettings.renderMode == BrushRenderMode.STAMP && dabBuffer.count > 0) {
+            // No longer clearing and drawing everything here, handled incrementally in drainInput
         }
 
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
@@ -316,9 +308,12 @@ class EngineRenderer(
                                     out = checkNotNull(capsuleRenderer),
                                 )
                             } else {
+                                dabRenderer?.beginStroke()
                                 stampEmitter.begin(batch, dabBuffer)
                                 strokeTarget.clear(0f, 0f, 0f, 0f)
-                                dabRenderer?.drawInto(
+                                stampPreviewInitialized = true
+
+                                dabRenderer?.drawPendingInto(
                                     target = strokeTarget,
                                     width = layerStack.canvasWidth,
                                     height = layerStack.canvasHeight,
@@ -339,8 +334,7 @@ class EngineRenderer(
                             )
                         } else {
                             stampEmitter.append(batch, dabBuffer)
-                            strokeTarget.clear(0f, 0f, 0f, 0f)
-                            dabRenderer?.drawInto(
+                            dabRenderer?.drawPendingInto(
                                 target = strokeTarget,
                                 width = layerStack.canvasWidth,
                                 height = layerStack.canvasHeight,
@@ -431,6 +425,8 @@ class EngineRenderer(
         capsuleEmitter.reset()
         capsuleRenderer?.clearStrokeData()
         capsulePreviewInitialized = false
+        stampPreviewInitialized = false
+        dabRenderer?.clearStrokeData()
         if (strokeTarget.framebufferId != 0) {
             strokeTarget.clear(0f, 0f, 0f, 0f)
         }
