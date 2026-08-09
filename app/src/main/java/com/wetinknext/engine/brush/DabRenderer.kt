@@ -134,6 +134,14 @@ class DabRenderer(private val maxDabs: Int) {
             dabs.count * DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES,
             dabs.floats,
         )
+
+        GLES30.glVertexAttribPointer(
+            1, 4, GLES30.GL_FLOAT, false, 20, 0
+        )
+        GLES30.glVertexAttribPointer(
+            2, 1, GLES30.GL_FLOAT, false, 20, 16
+        )
+
         dabs.finishUpload()
         GLES30.glDrawArraysInstanced(GLES30.GL_TRIANGLE_STRIP, 0, 4, dabs.count)
         
