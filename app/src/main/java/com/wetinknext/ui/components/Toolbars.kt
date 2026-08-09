@@ -42,11 +42,13 @@ fun TopToolbar(
     isSelectionActive: Boolean,
     isTransformActive: Boolean,
     isAnimationActive: Boolean,
+    isAdjustmentsActive: Boolean = false,
     onUndoClick: () -> Unit,
     onRedoClick: () -> Unit,
     onSelectionClick: () -> Unit,
     onTransformClick: () -> Unit,
     onAnimationClick: () -> Unit,
+    onAdjustmentsClick: () -> Unit = {},
     onLayersClick: () -> Unit,
     onColorClick: () -> Unit,
 ) {
@@ -66,6 +68,7 @@ fun TopToolbar(
         ToolbarIcon(Icons.Default.SelectAll, theme, isSelected = isSelectionActive, onClick = onSelectionClick)
         ToolbarIcon(Icons.Default.Movie, theme, isSelected = isAnimationActive, onClick = onAnimationClick)
         ToolbarIcon(Icons.Default.Fullscreen, theme, isSelected = isTransformActive, onClick = onTransformClick)
+        ToolbarIcon(Icons.Default.Tune, theme, isSelected = isAdjustmentsActive, onClick = onAdjustmentsClick)
         ToolbarIcon(Icons.Default.Layers, theme, onClick = onLayersClick)
         
         ColorPickerDot(

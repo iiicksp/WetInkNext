@@ -10,39 +10,43 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalContext
 import com.wetinknext.engine.brush.BrushPreset
+import com.wetinknext.engine.brush.BrushLibrary
 import com.wetinknext.engine.core.EditorUiState
 import com.wetinknext.engine.core.PaintSurfaceView
+import com.wetinknext.ui.animation.AnimationTimelineToolbar
 import com.wetinknext.ui.color.ColorPanel
 import com.wetinknext.ui.color.GlesColorState
-import com.wetinknext.ui.components.LayersPanel
-import com.wetinknext.ui.components.SideToolbar
-import com.wetinknext.ui.components.TopToolbar
+import com.wetinknext.ui.components.*
 import com.wetinknext.ui.state.LayerState
-import com.wetinknext.ui.theme.AppThemes
 import com.wetinknext.ui.theme.WetInkTheme
 import com.wetinknext.ui.theme.rememberThemeController
 
-enum class OpenPanel {
+private enum class EditorPanel {
     NONE,
+    BRUSH,
     LAYERS,
+    COLOR,
     SELECTION,
     TRANSFORM,
-    ANIMATION,
-    COLOR,
+    ADJUSTMENTS,
+    ANIMATION
 }
 
 @Composable
-fun EditorScreen() {
+fun EditorScreen(
+    onBack: () -> Unit = {}
+) {
     val context = LocalContext.current
     val themeController = rememberThemeController()
     val theme = themeController.current
     var uiState by remember { mutableStateOf(EditorUiState.empty) }
     var surface by remember { mutableStateOf<PaintSurfaceView?>(null) }
-    var openPanel by remember { mutableStateOf(OpenPanel.NONE) }
+    var openPanel by remember { mutableStateOf(EditorPanel.NONE) }
     var isEraser by remember { mutableStateOf(false) }
     
     val colorState = remember { GlesColorState(context) }
     var brushColor by remember { mutableStateOf(Color.Black) }
+    var selectedBrush by remember { mutableStateOf<BrushPreset?>(BrushLibrary.gPen) }
 
     val layerState = remember { LayerState() }
 
@@ -64,8 +68,8 @@ fun EditorScreen() {
                         surface = view
                         view.requestState()
 
-                        // Load initial brush preset (Pencil 6B)
-                        view.applyBrushPreset(com.wetinknext.engine.brush.BrushLibrary.pencil6B)
+                        // Load initial brush preset (G-Pen)
+                        view.applyBrushPreset(BrushLibrary.gPen)
                     }
                 },
             )
@@ -81,25 +85,29 @@ fun EditorScreen() {
                     currentColor = brushColor,
                     canUndo = uiState.canUndo,
                     canRedo = uiState.canRedo,
-                    isSelectionActive = openPanel == OpenPanel.SELECTION,
-                    isTransformActive = openPanel == OpenPanel.TRANSFORM,
-                    isAnimationActive = openPanel == OpenPanel.ANIMATION,
+                    isSelectionActive = openPanel == EditorPanel.SELECTION,
+                    isTransformActive = openPanel == EditorPanel.TRANSFORM,
+                    isAnimationActive = openPanel == EditorPanel.ANIMATION,
+                    isAdjustmentsActive = openPanel == EditorPanel.ADJUSTMENTS,
                     onUndoClick = { surface?.undo() },
                     onRedoClick = { surface?.redo() },
                     onSelectionClick = {
-                        openPanel = if (openPanel == OpenPanel.SELECTION) OpenPanel.NONE else OpenPanel.SELECTION
+                        openPanel = if (openPanel == EditorPanel.SELECTION) EditorPanel.NONE else EditorPanel.SELECTION
                     },
                     onTransformClick = {
-                        openPanel = if (openPanel == OpenPanel.TRANSFORM) OpenPanel.NONE else OpenPanel.TRANSFORM
+                        openPanel = if (openPanel == EditorPanel.TRANSFORM) EditorPanel.NONE else EditorPanel.TRANSFORM
                     },
                     onAnimationClick = {
-                        openPanel = if (openPanel == OpenPanel.ANIMATION) OpenPanel.NONE else OpenPanel.ANIMATION
+                        openPanel = if (openPanel == EditorPanel.ANIMATION) EditorPanel.NONE else EditorPanel.ANIMATION
+                    },
+                    onAdjustmentsClick = {
+                        openPanel = if (openPanel == EditorPanel.ADJUSTMENTS) EditorPanel.NONE else EditorPanel.ADJUSTMENTS
                     },
                     onLayersClick = {
-                        openPanel = if (openPanel == OpenPanel.LAYERS) OpenPanel.NONE else OpenPanel.LAYERS
+                        openPanel = if (openPanel == EditorPanel.LAYERS) EditorPanel.NONE else EditorPanel.LAYERS
                     },
                     onColorClick = {
-                        openPanel = if (openPanel == OpenPanel.COLOR) OpenPanel.NONE else OpenPanel.COLOR
+                        openPanel = if (openPanel == EditorPanel.COLOR) EditorPanel.NONE else EditorPanel.COLOR
                     }
                 )
             }
@@ -117,22 +125,73 @@ fun EditorScreen() {
                     isEraser = isEraser,
                     onBrushSizeChange = { surface?.setBrushSize(it) },
                     onBrushOpacityChange = { surface?.setBrushOpacity(it) },
-                    onBrushClick = { isEraser = false },
+                    onBrushClick = { 
+                        openPanel = if (openPanel == EditorPanel.BRUSH) EditorPanel.NONE else EditorPanel.BRUSH
+                    },
                     onEraserClick = { isEraser = it }
                 )
             }
 
-            // Panels
-            if (openPanel == OpenPanel.LAYERS) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 12.dp)
-                ) {
+            // Panel Host
+            EditorPanelHost(
+                panel = openPanel,
+                theme = theme,
+                surface = surface,
+                layerState = layerState,
+                colorState = colorState,
+                brushColor = brushColor,
+                selectedBrush = selectedBrush,
+                onBrushSelected = { preset ->
+                    selectedBrush = preset
+                    surface?.applyBrushPreset(preset)
+                },
+                onColorChange = {
+                    brushColor = it
+                    surface?.setBrushColor(it)
+                },
+                onDismiss = { openPanel = EditorPanel.NONE }
+            )
+        }
+    }
+}
+
+@Composable
+private fun EditorPanelHost(
+    panel: EditorPanel,
+    theme: com.wetinknext.ui.theme.AppTheme,
+    surface: PaintSurfaceView?,
+    layerState: LayerState,
+    colorState: GlesColorState,
+    brushColor: Color,
+    selectedBrush: BrushPreset?,
+    onBrushSelected: (BrushPreset) -> Unit,
+    onColorChange: (Color) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        when (panel) {
+            EditorPanel.NONE -> Unit
+            
+            EditorPanel.BRUSH -> {
+                Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)) {
+                    BrushPanel(
+                        currentBrush = selectedBrush ?: BrushLibrary.pencil6B,
+                        onBrushSelect = onBrushSelected,
+                        onBrushStudioOpen = { /* TODO */ },
+                        theme = theme,
+                        onDismiss = onDismiss,
+                        onDuplicate = { /* TODO */ },
+                        onDelete = { /* TODO */ }
+                    )
+                }
+            }
+
+            EditorPanel.LAYERS -> {
+                Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)) {
                     LayersPanel(
                         state = layerState,
                         theme = theme,
-                        onDismiss = { openPanel = OpenPanel.NONE },
+                        onDismiss = onDismiss,
                         onAddLayer = { surface?.addLayer() },
                         onSelectLayer = { surface?.setActiveLayer(it) },
                         onVisibleChange = { id, visible -> surface?.setLayerVisible(id, visible) },
@@ -142,22 +201,73 @@ fun EditorScreen() {
                 }
             }
 
-            if (openPanel == OpenPanel.COLOR) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 12.dp)
-                ) {
+            EditorPanel.COLOR -> {
+                Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)) {
                     ColorPanel(
                         state = colorState,
                         color = brushColor,
                         theme = theme,
-                        onColorChange = { 
-                            brushColor = it
-                            surface?.setBrushColor(it)
-                        },
+                        onColorChange = onColorChange,
                         onAddFromPhoto = { /* TODO */ },
-                        onDismiss = { openPanel = OpenPanel.NONE }
+                        onDismiss = onDismiss
+                    )
+                }
+            }
+
+            EditorPanel.SELECTION -> {
+                Box(modifier = Modifier.align(Alignment.BottomCenter)) {
+                    SelectionToolbar(
+                        theme = theme,
+                        currentShape = SelectionShapeUi.FREEHAND,
+                        onShapeChange = { /* TODO */ },
+                        onDone = onDismiss
+                    )
+                }
+            }
+
+            EditorPanel.TRANSFORM -> {
+                Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 20.dp)) {
+                    TransformMenuView(
+                        theme = theme,
+                        currentMode = TransformModeUi.UNIFORM,
+                        actions = object : TransformActions {
+                            override fun reset() { /* TODO */ }
+                            override fun cancel() { onDismiss() }
+                            override fun apply() { onDismiss() }
+                            override fun flipHorizontal() { /* TODO */ }
+                            override fun flipVertical() { /* TODO */ }
+                            override fun setMode(mode: TransformModeUi) { /* TODO */ }
+                        }
+                    )
+                }
+            }
+
+            EditorPanel.ADJUSTMENTS -> {
+                Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)) {
+                    AdjustmentsPanel(
+                        theme = theme,
+                        onClose = onDismiss,
+                        onAction = { /* TODO */ }
+                    )
+                }
+            }
+
+            EditorPanel.ANIMATION -> {
+                Box(modifier = Modifier.align(Alignment.BottomCenter)) {
+                    AnimationTimelineToolbar(
+                        theme = theme,
+                        document = com.wetinknext.domain.animation.AnimationDocument(enabled = true),
+                        currentFrameId = 0L,
+                        onFrameSelect = {},
+                        onFrameMove = { _, _ -> },
+                        onAddFrame = {},
+                        onDuplicateFrame = {},
+                        onDeleteFrame = {},
+                        onHoldChange = { _, _ -> },
+                        onRoleToggle = { _, _ -> },
+                        onAssembleLayers = {},
+                        onLayersClick = {},
+                        onClose = onDismiss
                     )
                 }
             }
