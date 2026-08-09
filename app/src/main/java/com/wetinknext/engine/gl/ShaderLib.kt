@@ -67,6 +67,7 @@ object ShaderLib {
         uniform float uGrainScale;
         uniform float uTextureDepth;
         uniform float uTextureContrast;
+        uniform float uStrokeOpacity;
         out vec4 fragColor;
         void main(){
             float r=length(vLocal);
@@ -82,7 +83,7 @@ object ShaderLib {
                 grainFactor = mix(1.0 - uTextureDepth, 1.0, val);
             }
 
-            float a = vAlpha * cov * grainFactor;
+            float a = vAlpha * cov * grainFactor * uStrokeOpacity;
             fragColor=vec4(uColorLinear*a,a);
         }
     """

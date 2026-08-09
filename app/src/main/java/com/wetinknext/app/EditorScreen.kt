@@ -45,7 +45,7 @@ fun EditorScreen(
     
     val colorState = remember { GlesColorState(context) }
     var brushColor by remember { mutableStateOf(Color.Black) }
-    var selectedBrush by remember { mutableStateOf<BrushPreset?>(BrushLibrary.gPen) }
+    var selectedBrush by remember { mutableStateOf<BrushPreset?>(BrushLibrary.pencil6B) }
 
     val layerState = remember { LayerState() }
 
@@ -62,7 +62,8 @@ fun EditorScreen(
     // Initialize state
     LaunchedEffect(surface) {
         surface.requestState()
-        surface.applyBrushPreset(BrushLibrary.gPen)
+        surface.applyBrushPreset(BrushLibrary.pencil6B)
+        selectedBrush = BrushLibrary.pencil6B
     }
 
     WetInkTheme(theme = theme, fontMode = themeController.font) {

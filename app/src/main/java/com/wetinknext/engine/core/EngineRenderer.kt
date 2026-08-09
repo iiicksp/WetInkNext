@@ -383,6 +383,7 @@ class EngineRenderer(
                                     dabs = dabBuffer,
                                     colorLinear = strokeColorLinear,
                                     blendPolicy = brushSettings.blendPolicy,
+                                    strokeOpacity = 1f
                                 )
                             }
                         }
@@ -404,6 +405,7 @@ class EngineRenderer(
                                 dabs = dabBuffer,
                                 colorLinear = strokeColorLinear,
                                 blendPolicy = brushSettings.blendPolicy,
+                                strokeOpacity = 1f
                             )
                         }
                     }
@@ -456,6 +458,7 @@ class EngineRenderer(
             dabs = dabBuffer,
             colorLinear = strokeColorLinear,
             blendPolicy = brushSettings.blendPolicy,
+            strokeOpacity = (brushSettings.opacity * brushSettings.flow).coerceIn(0f, 1f)
         )
         layer.version++
         val afterTilesRaw = TileSnapshotCapture.capture(layer.target, dirtyBounds)

@@ -22,6 +22,7 @@ class DabRenderer(private val maxDabs: Int) {
     private var uGrainScale = -1
     private var uTextureDepth = -1
     private var uTextureContrast = -1
+    private var uStrokeOpacity = -1
 
     private var grainTextureId = 0
     private var grainScale = 1f
@@ -46,8 +47,9 @@ class DabRenderer(private val maxDabs: Int) {
         uGrainScale = GLES30.glGetUniformLocation(currentProgram.id, "uGrainScale")
         uTextureDepth = GLES30.glGetUniformLocation(currentProgram.id, "uTextureDepth")
         uTextureContrast = GLES30.glGetUniformLocation(currentProgram.id, "uTextureContrast")
+        uStrokeOpacity = GLES30.glGetUniformLocation(currentProgram.id, "uStrokeOpacity")
 
-        check(uCanvasToClip >= 0 && uColorLinear >= 0) { "Dab shader uniforms missing" }
+        check(uCanvasToClip >= 0 && uColorLinear >= 0 && uStrokeOpacity >= 0) { "Dab shader uniforms missing" }
 
         val quad = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
         val quadData = ByteBuffer.allocateDirect(quad.size * Float.SIZE_BYTES)
@@ -100,61 +102,23 @@ class DabRenderer(private val maxDabs: Int) {
         dabs: DabBuffer,
         colorLinear: FloatArray,
         blendPolicy: BlendPolicy,
+        strokeOpacity: Float = 1f,
     ) {
         if (dabs.count == 0) return
-        val currentProgram = program ?: return
         require(colorLinear.size >= 3)
 
-        target.bind()
-        GLES30.glViewport(0, 0, width, height)
-        blendController.begin(blendPolicy)
-
-        currentProgram.use()
-        GLES30.glUniformMatrix4fv(uCanvasToClip, 1, false, canvasToFbo, 0)
-        GLES30.glUniform3f(uColorLinear, colorLinear[0], colorLinear[1], colorLinear[2])
-        
-        GLES30.glUniform2f(uCanvasSize, width.toFloat(), height.toFloat())
-        GLES30.glUniform1i(uGrainActive, if (grainTextureId != 0) 1 else 0)
-        GLES30.glUniform1f(uGrainScale, grainScale)
-        GLES30.glUniform1f(uTextureDepth, textureDepth)
-        GLES30.glUniform1f(uTextureContrast, textureContrast)
-
-        if (grainTextureId != 0) {
-            GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
-            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, grainTextureId)
-            GLES30.glUniform1i(uGrainTex, 2)
-        }
-
-        dabs.prepareForUpload()
-        GLES30.glBindVertexArray(vaoId)
-        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, instanceBufferId)
-        GLES30.glBufferSubData(
-            GLES30.GL_ARRAY_BUFFER,
-            0,
-            dabs.count * DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES,
-            dabs.floats,
+        drawRange(
+            target = target,
+            width = width,
+            height = height,
+            canvasToFbo = canvasToFbo,
+            dabs = dabs,
+            firstDab = 0,
+            count = dabs.count,
+            colorLinear = colorLinear,
+            blendPolicy = blendPolicy,
+            strokeOpacity = strokeOpacity,
         )
-
-        GLES30.glVertexAttribPointer(
-            1, 4, GLES30.GL_FLOAT, false, 20, 0
-        )
-        GLES30.glVertexAttribPointer(
-            2, 1, GLES30.GL_FLOAT, false, 20, 16
-        )
-
-        dabs.finishUpload()
-        GLES30.glDrawArraysInstanced(GLES30.GL_TRIANGLE_STRIP, 0, 4, dabs.count)
-        
-        if (grainTextureId != 0) {
-            GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
-            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
-        }
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-
-        GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
-        GLES30.glBindVertexArray(0)
-        blendController.end()
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
     }
 
     fun release() {
@@ -171,6 +135,7 @@ class DabRenderer(private val maxDabs: Int) {
         instanceBufferId = 0
         uCanvasToClip = -1
         uColorLinear = -1
+        uStrokeOpacity = -1
     }
 
     fun beginStroke() {
@@ -208,6 +173,7 @@ class DabRenderer(private val maxDabs: Int) {
         dabs: DabBuffer,
         colorLinear: FloatArray,
         blendPolicy: BlendPolicy,
+        strokeOpacity: Float = 1f,
     ) {
         val first = uploadedDabCount
         val count = dabs.count - first
@@ -224,6 +190,7 @@ class DabRenderer(private val maxDabs: Int) {
             count = count,
             colorLinear = colorLinear,
             blendPolicy = blendPolicy,
+            strokeOpacity = strokeOpacity,
         )
         uploadedDabCount = dabs.count
         dabs.finishUpload()
@@ -239,6 +206,7 @@ class DabRenderer(private val maxDabs: Int) {
         count: Int,
         colorLinear: FloatArray,
         blendPolicy: BlendPolicy,
+        strokeOpacity: Float,
     ) {
         val currentProgram = program ?: return
         target.bind()
@@ -253,6 +221,7 @@ class DabRenderer(private val maxDabs: Int) {
         GLES30.glUniform1f(uGrainScale, grainScale)
         GLES30.glUniform1f(uTextureDepth, textureDepth)
         GLES30.glUniform1f(uTextureContrast, textureContrast)
+        GLES30.glUniform1f(uStrokeOpacity, strokeOpacity.coerceIn(0f, 1f))
 
         if (grainTextureId != 0) {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
@@ -267,6 +236,14 @@ class DabRenderer(private val maxDabs: Int) {
             firstDab * DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES,
             count * DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES,
             dabs.floats,
+        )
+
+        // Reset offsets for instancing
+        GLES30.glVertexAttribPointer(
+            1, 4, GLES30.GL_FLOAT, false, 20, 0
+        )
+        GLES30.glVertexAttribPointer(
+            2, 1, GLES30.GL_FLOAT, false, 20, 16
         )
 
         // Manual attribute offset for ES 3.0 (since BaseInstance is 3.1+)
