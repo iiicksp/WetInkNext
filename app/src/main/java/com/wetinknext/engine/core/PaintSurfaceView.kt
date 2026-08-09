@@ -24,39 +24,74 @@ class PaintSurfaceView @JvmOverloads constructor(
     init {
         setEGLContextClientVersion(3)
         setRenderer(engineRenderer)
-        renderMode = RENDERMODE_CONTINUOUSLY
+        renderMode = RENDERMODE_WHEN_DIRTY
         engineRenderer.onStateChange = { state ->
             post { onEditorStateChange?.invoke(state) }
+            requestRender()
         }
         engineRenderer.setOnSecondaryPointerDown {
             engineRenderer.requestCancelFromInput()
+            requestRender()
         }
     }
 
-    override fun onTouchEvent(event: MotionEvent): Boolean =
-        engineRenderer.onTouchEvent(event) || super.onTouchEvent(event)
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        val handled = engineRenderer.onTouchEvent(event)
+        if (handled) requestRender()
+        return handled || super.onTouchEvent(event)
+    }
 
-    fun requestState() = queueEvent { engineRenderer.requestState() }
+    fun requestState() = queueEvent { 
+        engineRenderer.requestState()
+        requestRender()
+    }
 
-    fun undo() = queueEvent { engineRenderer.undo() }
+    fun undo() = queueEvent { 
+        engineRenderer.undo()
+        requestRender()
+    }
 
-    fun redo() = queueEvent { engineRenderer.redo() }
+    fun redo() = queueEvent { 
+        engineRenderer.redo()
+        requestRender()
+    }
 
-    fun setActiveLayer(id: Long) = queueEvent { engineRenderer.setActiveLayer(id) }
+    fun setActiveLayer(id: Long) = queueEvent { 
+        engineRenderer.setActiveLayer(id)
+        requestRender()
+    }
 
-    fun addLayer() = queueEvent { engineRenderer.addLayer() }
+    fun addLayer() = queueEvent { 
+        engineRenderer.addLayer()
+        requestRender()
+    }
 
-    fun removeLayer(id: Long) = queueEvent { engineRenderer.removeLayer(id) }
+    fun removeLayer(id: Long) = queueEvent { 
+        engineRenderer.removeLayer(id)
+        requestRender()
+    }
 
     fun setLayerVisible(id: Long, visible: Boolean) =
-        queueEvent { engineRenderer.setLayerVisible(id, visible) }
+        queueEvent { 
+            engineRenderer.setLayerVisible(id, visible)
+            requestRender()
+        }
 
     fun setLayerOpacity(id: Long, opacity: Float) =
-        queueEvent { engineRenderer.setLayerOpacity(id, opacity) }
+        queueEvent { 
+            engineRenderer.setLayerOpacity(id, opacity)
+            requestRender()
+        }
 
-    fun setBrushSize(px: Float) = queueEvent { engineRenderer.setBrushSize(px) }
+    fun setBrushSize(px: Float) = queueEvent { 
+        engineRenderer.setBrushSize(px)
+        requestRender()
+    }
 
-    fun setBrushOpacity(opacity: Float) = queueEvent { engineRenderer.setBrushOpacity(opacity) }
+    fun setBrushOpacity(opacity: Float) = queueEvent { 
+        engineRenderer.setBrushOpacity(opacity)
+        requestRender()
+    }
 
     fun loadGrainTexture(
         path: String,
@@ -82,6 +117,7 @@ class PaintSurfaceView @JvmOverloads constructor(
                         depth = depth,
                         contrast = contrast,
                     )
+                    requestRender()
                 }
             },
             onError = { error ->
@@ -97,6 +133,7 @@ class PaintSurfaceView @JvmOverloads constructor(
 
         queueEvent {
             engineRenderer.clearGrainTexture()
+            requestRender()
         }
     }
 
