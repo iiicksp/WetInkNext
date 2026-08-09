@@ -9,6 +9,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalContext
+import com.wetinknext.engine.brush.BrushPreset
 import com.wetinknext.engine.core.EditorUiState
 import com.wetinknext.engine.core.PaintSurfaceView
 import com.wetinknext.ui.color.ColorPanel
@@ -64,14 +65,7 @@ fun EditorScreen() {
                         view.requestState()
 
                         // Load initial brush preset (Pencil 6B)
-                        val pencil = com.wetinknext.engine.brush.BrushLibrary.pencil6B.settings
-                        view.loadGrainTexture(
-                            path = pencil.grainAssetPath ?: "",
-                            scale = pencil.grainScale,
-                            canvasLocked = pencil.grainCanvasLocked,
-                            depth = pencil.textureDepth,
-                            contrast = pencil.textureContrast,
-                        )
+                        view.applyBrushPreset(com.wetinknext.engine.brush.BrushLibrary.pencil6B)
                     }
                 },
             )
@@ -169,4 +163,29 @@ fun EditorScreen() {
             }
         }
     }
+}
+
+private fun PaintSurfaceView.applyBrushPreset(
+    preset: BrushPreset
+) {
+    val settings = preset.settings
+
+    setBrushSettings(settings)
+
+    val grainPath = settings.grainAssetPath
+        ?.trim()
+        ?.takeIf { it.isNotEmpty() }
+
+    if (grainPath == null) {
+        clearGrainTexture()
+        return
+    }
+
+    loadGrainTexture(
+        path = grainPath,
+        scale = settings.grainScale,
+        canvasLocked = settings.grainCanvasLocked,
+        depth = settings.textureDepth,
+        contrast = settings.textureContrast,
+    )
 }
