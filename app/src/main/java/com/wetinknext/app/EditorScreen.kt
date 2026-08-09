@@ -283,7 +283,7 @@ private fun PaintSurfaceView.applyBrushPreset(
 ) {
     val settings = preset.settings
 
-    setBrushSettings(settings)
+    applyBrush(settings)
 
     val grainPath = settings.grainAssetPath
         ?.trim()

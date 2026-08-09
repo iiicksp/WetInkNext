@@ -182,26 +182,23 @@ class EngineRenderer(
         updateBrush(brushSettings.copy(colorArgb = color.toArgb().toLong() and 0xFFFFFFFFL))
 
     fun applyBrush(settings: BrushSettings) {
-        updateBrush(settings.resolved())
+        val nextSettings = settings
+            .copy(colorArgb = brushSettings.colorArgb)
+            .resolved()
+        updateBrush(nextSettings)
     }
 
     fun setBrushSettings(settings: BrushSettings) {
         resetStroke()
-
-        brushSettings = settings
-        applyBrushToEmitters(settings)
-
-        ColorSpaces.srgb8ToLinear(
-            settings.colorArgb,
-            strokeColorLinear,
-        )
-
-        publishState()
+        updateBrush(settings)
     }
 
     /** Правка кисти во время штриха больше не отменяет штрих: применяем на следующем DOWN. */
     private fun updateBrush(next: BrushSettings) {
         brushSettings = next
+        
+        ColorSpaces.srgb8ToLinear(next.colorArgb, strokeColorLinear)
+
         if (strokeActive) pendingBrush = next else applyBrushToEmitters(next)
         publishState()
     }
