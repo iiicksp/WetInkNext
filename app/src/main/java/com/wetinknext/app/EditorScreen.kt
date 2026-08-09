@@ -8,8 +8,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.platform.LocalContext
 import com.wetinknext.engine.core.EditorUiState
 import com.wetinknext.engine.core.PaintSurfaceView
+import com.wetinknext.ui.color.ColorPanel
+import com.wetinknext.ui.color.GlesColorState
 import com.wetinknext.ui.components.LayersPanel
 import com.wetinknext.ui.components.SideToolbar
 import com.wetinknext.ui.components.TopToolbar
@@ -29,12 +32,16 @@ enum class OpenPanel {
 
 @Composable
 fun EditorScreen() {
+    val context = LocalContext.current
     val themeController = rememberThemeController()
     val theme = themeController.current
     var uiState by remember { mutableStateOf(EditorUiState.empty) }
     var surface by remember { mutableStateOf<PaintSurfaceView?>(null) }
     var openPanel by remember { mutableStateOf(OpenPanel.NONE) }
     var isEraser by remember { mutableStateOf(false) }
+    
+    val colorState = remember { GlesColorState(context) }
+    var brushColor by remember { mutableStateOf(Color.Black) }
 
     val layerState = remember { LayerState() }
 
@@ -77,7 +84,7 @@ fun EditorScreen() {
             ) {
                 TopToolbar(
                     theme = theme,
-                    currentColor = Color.Black, // Placeholder, engine integration for color needed
+                    currentColor = brushColor,
                     canUndo = uiState.canUndo,
                     canRedo = uiState.canRedo,
                     isSelectionActive = openPanel == OpenPanel.SELECTION,
@@ -137,6 +144,26 @@ fun EditorScreen() {
                         onVisibleChange = { id, visible -> surface?.setLayerVisible(id, visible) },
                         onOpacityChange = { id, opacity -> surface?.setLayerOpacity(id, opacity) },
                         onRemoveLayer = { id -> surface?.removeLayer(id) }
+                    )
+                }
+            }
+
+            if (openPanel == OpenPanel.COLOR) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 12.dp)
+                ) {
+                    ColorPanel(
+                        state = colorState,
+                        color = brushColor,
+                        theme = theme,
+                        onColorChange = { 
+                            brushColor = it
+                            surface?.setBrushColor(it)
+                        },
+                        onAddFromPhoto = { /* TODO */ },
+                        onDismiss = { openPanel = OpenPanel.NONE }
                     )
                 }
             }

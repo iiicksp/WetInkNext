@@ -93,6 +93,11 @@ class PaintSurfaceView @JvmOverloads constructor(
         requestRender()
     }
 
+    fun setBrushColor(color: androidx.compose.ui.graphics.Color) = queueEvent {
+        engineRenderer.setBrushColor(color)
+        requestRender()
+    }
+
     fun loadGrainTexture(
         path: String,
         scale: Float = 1f,

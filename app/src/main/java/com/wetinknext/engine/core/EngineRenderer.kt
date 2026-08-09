@@ -3,6 +3,7 @@ package com.wetinknext.engine.core
 import android.opengl.GLES30
 import android.opengl.GLSurfaceView
 import android.view.MotionEvent
+import androidx.compose.ui.graphics.toArgb
 import com.wetinknext.engine.brush.BrushSettings
 import com.wetinknext.engine.brush.BrushTexture
 import com.wetinknext.engine.brush.LoadedBrushTexture
@@ -176,6 +177,9 @@ class EngineRenderer(
 
     fun setBrushOpacity(opacity: Float) =
         updateBrush(brushSettings.copy(opacity = opacity.coerceIn(0f, 1f)))
+
+    fun setBrushColor(color: androidx.compose.ui.graphics.Color) =
+        updateBrush(brushSettings.copy(colorArgb = color.toArgb().toLong() and 0xFFFFFFFFL))
 
     /** Правка кисти во время штриха больше не отменяет штрих: применяем на следующем DOWN. */
     private fun updateBrush(next: BrushSettings) {
