@@ -40,7 +40,6 @@ fun EditorScreen(
     val themeController = rememberThemeController()
     val theme = themeController.current
     var uiState by remember { mutableStateOf(EditorUiState.empty) }
-    var surface by remember { mutableStateOf<PaintSurfaceView?>(null) }
     var openPanel by remember { mutableStateOf(EditorPanel.NONE) }
     var isEraser by remember { mutableStateOf(false) }
     
@@ -50,8 +49,20 @@ fun EditorScreen(
 
     val layerState = remember { LayerState() }
 
+    val surface = remember {
+        PaintSurfaceView(context).also { view ->
+            view.onEditorStateChange = { uiState = it }
+        }
+    }
+
     LaunchedEffect(uiState) {
         layerState.syncFromEditor(uiState)
+    }
+
+    // Initialize state
+    LaunchedEffect(surface) {
+        surface.requestState()
+        surface.applyBrushPreset(BrushLibrary.gPen)
     }
 
     WetInkTheme(theme = theme, fontMode = themeController.font) {
@@ -62,16 +73,7 @@ fun EditorScreen(
         ) {
             AndroidView(
                 modifier = Modifier.fillMaxSize(),
-                factory = { context ->
-                    PaintSurfaceView(context).also { view ->
-                        view.onEditorStateChange = { uiState = it }
-                        surface = view
-                        view.requestState()
-
-                        // Load initial brush preset (G-Pen)
-                        view.applyBrushPreset(BrushLibrary.gPen)
-                    }
-                },
+                factory = { surface },
             )
 
             // Top Toolbar
@@ -89,8 +91,8 @@ fun EditorScreen(
                     isTransformActive = openPanel == EditorPanel.TRANSFORM,
                     isAnimationActive = openPanel == EditorPanel.ANIMATION,
                     isAdjustmentsActive = openPanel == EditorPanel.ADJUSTMENTS,
-                    onUndoClick = { surface?.undo() },
-                    onRedoClick = { surface?.redo() },
+                    onUndoClick = { surface.undo() },
+                    onRedoClick = { surface.redo() },
                     onSelectionClick = {
                         openPanel = if (openPanel == EditorPanel.SELECTION) EditorPanel.NONE else EditorPanel.SELECTION
                     },
@@ -108,7 +110,7 @@ fun EditorScreen(
                     },
                     onColorClick = {
                         openPanel = if (openPanel == EditorPanel.COLOR) EditorPanel.NONE else EditorPanel.COLOR
-                    }
+                    },
                 )
             }
 
@@ -123,8 +125,8 @@ fun EditorScreen(
                     brushSize = uiState.brushSizePx,
                     brushOpacity = uiState.brushOpacity,
                     isEraser = isEraser,
-                    onBrushSizeChange = { surface?.setBrushSize(it) },
-                    onBrushOpacityChange = { surface?.setBrushOpacity(it) },
+                    onBrushSizeChange = { surface.setBrushSize(it) },
+                    onBrushOpacityChange = { surface.setBrushOpacity(it) },
                     onBrushClick = { 
                         openPanel = if (openPanel == EditorPanel.BRUSH) EditorPanel.NONE else EditorPanel.BRUSH
                     },
@@ -143,11 +145,11 @@ fun EditorScreen(
                 selectedBrush = selectedBrush,
                 onBrushSelected = { preset ->
                     selectedBrush = preset
-                    surface?.applyBrushPreset(preset)
+                    surface.applyBrushPreset(preset)
                 },
                 onColorChange = {
                     brushColor = it
-                    surface?.setBrushColor(it)
+                    surface.setBrushColor(it)
                 },
                 onDismiss = { openPanel = EditorPanel.NONE }
             )
