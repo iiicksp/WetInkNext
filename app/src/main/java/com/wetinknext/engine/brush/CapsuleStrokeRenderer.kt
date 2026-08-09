@@ -1,6 +1,7 @@
 package com.wetinknext.engine.brush
 
 import android.opengl.GLES30
+import com.wetinknext.BuildConfig
 import com.wetinknext.engine.gl.GlCheck
 import com.wetinknext.engine.gl.GlProgram
 import com.wetinknext.engine.gl.RenderTarget
@@ -49,6 +50,9 @@ class CapsuleStrokeRenderer(
     private var grainCanvasLocked = true
     private var textureDepth = 1f
     private var textureContrast = 1f
+
+    private val checkGlErrors: Boolean
+        get() = BuildConfig.DEBUG
 
     /**
      * Формат:
@@ -540,7 +544,9 @@ class CapsuleStrokeRenderer(
             maxSegments * FLOATS_PER_SEGMENT,
         )
 
-        checkNoGlError("CapsuleStrokeRenderer.drawRange")
+        if (checkGlErrors) {
+            checkNoGlError("CapsuleStrokeRenderer.drawRange")
+        }
         return true
     }
 
@@ -636,8 +642,6 @@ class CapsuleStrokeRenderer(
     }
 
     private fun checkNoGlError(label: String) {
-        if (!CHECK_GL_ERRORS) return
-
         val error = GLES30.glGetError()
         check(error == GLES30.GL_NO_ERROR) {
             "$label: GL error 0x${error.toString(16)}"
@@ -645,7 +649,6 @@ class CapsuleStrokeRenderer(
     }
 
     companion object {
-        private const val CHECK_GL_ERRORS = true
 
         private const val ATTR_CORNER = 0
         private const val ATTR_SEGMENT_A = 1
