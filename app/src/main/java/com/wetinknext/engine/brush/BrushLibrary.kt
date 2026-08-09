@@ -1,5 +1,17 @@
 package com.wetinknext.engine.brush
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.ui.graphics.vector.ImageVector
+
+data class BrushUiCategory(
+    val name: String,
+    val icon: ImageVector,
+    val brushes: List<BrushPreset>,
+)
+
 object BrushLibrary {
     val pencil6B = BrushPreset(
         id = "pencil_6b",
@@ -45,6 +57,24 @@ object BrushLibrary {
             pressureGamma = 1.7f,
             minSizeRatio = 0.06f,
             blendPolicy = BlendPolicy.NON_BUILDUP,
+        )
+    )
+
+    val allCategories = listOf(
+        BrushUiCategory(
+            name = "Pencil",
+            icon = Icons.Default.Create,
+            brushes = listOf(pencil6B)
+        ),
+        BrushUiCategory(
+            name = "Ink",
+            icon = Icons.Default.Brush,
+            brushes = listOf(gPen)
+        ),
+        BrushUiCategory(
+            name = "Favorites",
+            icon = Icons.Default.Star,
+            brushes = emptyList()
         )
     )
 }
