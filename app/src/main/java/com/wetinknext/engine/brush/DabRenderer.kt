@@ -16,6 +16,18 @@ class DabRenderer(private val maxDabs: Int) {
     private var instanceBufferId = 0
     private var uCanvasToClip = -1
     private var uColorLinear = -1
+    private var uCanvasSize = -1
+    private var uGrainTex = -1
+    private var uGrainActive = -1
+    private var uGrainScale = -1
+    private var uTextureDepth = -1
+    private var uTextureContrast = -1
+
+    private var grainTextureId = 0
+    private var grainScale = 1f
+    private var textureDepth = 1f
+    private var textureContrast = 1f
+
     private var uploadedDabCount = 0
     private val blendController = BlendController()
 
@@ -28,6 +40,13 @@ class DabRenderer(private val maxDabs: Int) {
         currentProgram.use()
         uCanvasToClip = GLES30.glGetUniformLocation(currentProgram.id, "uCanvasToClip")
         uColorLinear = GLES30.glGetUniformLocation(currentProgram.id, "uColorLinear")
+        uCanvasSize = GLES30.glGetUniformLocation(currentProgram.id, "uCanvasSize")
+        uGrainTex = GLES30.glGetUniformLocation(currentProgram.id, "uGrainTex")
+        uGrainActive = GLES30.glGetUniformLocation(currentProgram.id, "uGrainActive")
+        uGrainScale = GLES30.glGetUniformLocation(currentProgram.id, "uGrainScale")
+        uTextureDepth = GLES30.glGetUniformLocation(currentProgram.id, "uTextureDepth")
+        uTextureContrast = GLES30.glGetUniformLocation(currentProgram.id, "uTextureContrast")
+
         check(uCanvasToClip >= 0 && uColorLinear >= 0) { "Dab shader uniforms missing" }
 
         val quad = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
@@ -93,6 +112,19 @@ class DabRenderer(private val maxDabs: Int) {
         currentProgram.use()
         GLES30.glUniformMatrix4fv(uCanvasToClip, 1, false, canvasToFbo, 0)
         GLES30.glUniform3f(uColorLinear, colorLinear[0], colorLinear[1], colorLinear[2])
+        
+        GLES30.glUniform2f(uCanvasSize, width.toFloat(), height.toFloat())
+        GLES30.glUniform1i(uGrainActive, if (grainTextureId != 0) 1 else 0)
+        GLES30.glUniform1f(uGrainScale, grainScale)
+        GLES30.glUniform1f(uTextureDepth, textureDepth)
+        GLES30.glUniform1f(uTextureContrast, textureContrast)
+
+        if (grainTextureId != 0) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, grainTextureId)
+            GLES30.glUniform1i(uGrainTex, 2)
+        }
+
         dabs.prepareForUpload()
         GLES30.glBindVertexArray(vaoId)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, instanceBufferId)
@@ -104,6 +136,13 @@ class DabRenderer(private val maxDabs: Int) {
         )
         dabs.finishUpload()
         GLES30.glDrawArraysInstanced(GLES30.GL_TRIANGLE_STRIP, 0, 4, dabs.count)
+        
+        if (grainTextureId != 0) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        }
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         GLES30.glBindVertexArray(0)
         blendController.end()
@@ -115,6 +154,7 @@ class DabRenderer(private val maxDabs: Int) {
         program?.release()
         program = null
         uploadedDabCount = 0
+        grainTextureId = 0
         if (instanceBufferId != 0) GLES30.glDeleteBuffers(1, intArrayOf(instanceBufferId), 0)
         if (quadBufferId != 0) GLES30.glDeleteBuffers(1, intArrayOf(quadBufferId), 0)
         if (vaoId != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(vaoId), 0)
@@ -131,6 +171,25 @@ class DabRenderer(private val maxDabs: Int) {
 
     fun clearStrokeData() {
         uploadedDabCount = 0
+    }
+
+    fun setGrainTexture(
+        textureId: Int,
+        scale: Float,
+        depth: Float,
+        contrast: Float,
+    ) {
+        grainTextureId = textureId
+        grainScale = scale.coerceAtLeast(0.0001f)
+        textureDepth = depth.coerceIn(0f, 1f)
+        textureContrast = contrast.coerceIn(0f, 2f)
+    }
+
+    fun clearGrainTexture() {
+        grainTextureId = 0
+        grainScale = 1f
+        textureDepth = 1f
+        textureContrast = 1f
     }
 
     fun drawPendingInto(
@@ -181,6 +240,18 @@ class DabRenderer(private val maxDabs: Int) {
         GLES30.glUniformMatrix4fv(uCanvasToClip, 1, false, canvasToFbo, 0)
         GLES30.glUniform3f(uColorLinear, colorLinear[0], colorLinear[1], colorLinear[2])
 
+        GLES30.glUniform2f(uCanvasSize, width.toFloat(), height.toFloat())
+        GLES30.glUniform1i(uGrainActive, if (grainTextureId != 0) 1 else 0)
+        GLES30.glUniform1f(uGrainScale, grainScale)
+        GLES30.glUniform1f(uTextureDepth, textureDepth)
+        GLES30.glUniform1f(uTextureContrast, textureContrast)
+
+        if (grainTextureId != 0) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, grainTextureId)
+            GLES30.glUniform1i(uGrainTex, 2)
+        }
+
         GLES30.glBindVertexArray(vaoId)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, instanceBufferId)
         GLES30.glBufferSubData(
@@ -201,6 +272,13 @@ class DabRenderer(private val maxDabs: Int) {
         )
 
         GLES30.glDrawArraysInstanced(GLES30.GL_TRIANGLE_STRIP, 0, 4, count)
+        
+        if (grainTextureId != 0) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        }
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         GLES30.glBindVertexArray(0)
         blendController.end()

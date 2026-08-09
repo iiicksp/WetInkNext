@@ -42,12 +42,49 @@ object ShaderLib {
         layout(location = 1) in vec4 iDab0;
         layout(location = 2) in float iAlpha;
         uniform mat4 uCanvasToClip;
-        out vec2 vLocal; flat out float vAlpha;
-        void main(){ float c=cos(iDab0.w), s=sin(iDab0.w); vec2 r=vec2(c*aCorner.x-s*aCorner.y,s*aCorner.x+c*aCorner.y); vLocal=aCorner;vAlpha=iAlpha;gl_Position=uCanvasToClip*vec4(iDab0.xy+r*iDab0.z,0.,1.); }
+        uniform vec2 uCanvasSize;
+        out vec2 vLocal;
+        out vec2 vCanvasUv;
+        flat out float vAlpha;
+        void main(){
+            float c=cos(iDab0.w), s=sin(iDab0.w);
+            vec2 r=vec2(c*aCorner.x-s*aCorner.y,s*aCorner.x+c*aCorner.y);
+            vLocal=aCorner;
+            vAlpha=iAlpha;
+            vec2 p = iDab0.xy+r*iDab0.z;
+            vCanvasUv = p / uCanvasSize;
+            gl_Position=uCanvasToClip*vec4(p,0.,1.);
+        }
     """
     const val dabFragment = """#version 300 es
-        precision highp float; in vec2 vLocal; flat in float vAlpha; uniform vec3 uColorLinear; out vec4 fragColor;
-        void main(){ float r=length(vLocal), aa=max(fwidth(r),.001), a=vAlpha*(1.-smoothstep(1.-aa,1.+aa,r));fragColor=vec4(uColorLinear*a,a); }
+        precision highp float;
+        in vec2 vLocal;
+        in vec2 vCanvasUv;
+        flat in float vAlpha;
+        uniform vec3 uColorLinear;
+        uniform sampler2D uGrainTex;
+        uniform int uGrainActive;
+        uniform float uGrainScale;
+        uniform float uTextureDepth;
+        uniform float uTextureContrast;
+        out vec4 fragColor;
+        void main(){
+            float r=length(vLocal);
+            float aa=max(fwidth(r),.001);
+            float cov=1.-smoothstep(1.-aa,1.+aa,r);
+            if (cov <= 0.0) discard;
+
+            float grainFactor = 1.0;
+            if (uGrainActive == 1) {
+                vec2 uv = vCanvasUv * max(uGrainScale, 0.0001);
+                float val = texture(uGrainTex, uv).r;
+                val = clamp((val - 0.5) * uTextureContrast + 0.5, 0.0, 1.0);
+                grainFactor = mix(1.0 - uTextureDepth, 1.0, val);
+            }
+
+            float a = vAlpha * cov * grainFactor;
+            fragColor=vec4(uColorLinear*a,a);
+        }
     """
     const val strokeCompositeFragment = """#version 300 es
         precision highp float; in vec2 vUv; uniform sampler2D uCanvasTex; uniform sampler2D uStrokeTex; uniform int uStrokeActive; out vec4 fragColor;
@@ -175,16 +212,15 @@ object ShaderLib {
             float cov = 1.0 - smoothstep(-w, w, d);
             if (cov <= 0.0) discard;
 
-            float grain = 1.0;
+            float grainFactor = 1.0;
             if (uGrainActive == 1) {
                 vec2 uv = vCanvasUv * max(uGrainScale, 0.0001);
                 float val = texture(uGrainTex, uv).r;
-                // Применяем контраст и глубину
-                val = (val - 0.5) * uTextureContrast + 0.5;
-                grain = mix(1.0, val, uTextureDepth);
+                val = clamp((val - 0.5) * uTextureContrast + 0.5, 0.0, 1.0);
+                grainFactor = mix(1.0 - uTextureDepth, 1.0, val);
             }
 
-            float finalAlpha = cov * grain;
+            float finalAlpha = cov * grainFactor;
             fragColor = vec4(uColorLinear * finalAlpha, finalAlpha);
         }
     """

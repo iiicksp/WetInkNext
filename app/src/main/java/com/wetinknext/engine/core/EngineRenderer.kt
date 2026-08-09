@@ -525,11 +525,6 @@ class EngineRenderer(
         depth: Float,
         contrast: Float,
     ) {
-        val renderer = capsuleRenderer
-        if (renderer == null) {
-            return
-        }
-
         val oldTexture = grainTexture
         val newTexture = BrushTexture()
 
@@ -540,10 +535,17 @@ class EngineRenderer(
                 rgba = loaded.rgba,
             )
 
-            renderer.setGrainTexture(
+            capsuleRenderer?.setGrainTexture(
                 textureId = newTexture.textureId,
                 scale = scale,
                 canvasLocked = canvasLocked,
+                depth = depth,
+                contrast = contrast,
+            )
+            
+            dabRenderer?.setGrainTexture(
+                textureId = newTexture.textureId,
+                scale = scale,
                 depth = depth,
                 contrast = contrast,
             )
@@ -560,6 +562,7 @@ class EngineRenderer(
 
     fun clearGrainTexture() {
         capsuleRenderer?.clearGrainTexture()
+        dabRenderer?.clearGrainTexture()
 
         grainTexture?.release()
         grainTexture = null

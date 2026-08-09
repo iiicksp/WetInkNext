@@ -54,12 +54,13 @@ fun EditorScreen() {
                     surface = view
                     view.requestState()
                     
+                    val pencil = com.wetinknext.engine.brush.BrushLibrary.pencil6B.settings
                     view.loadGrainTexture(
-                        path = "asset:brush/grain_test.png",
-                        scale = 8f,
-                        canvasLocked = true,
-                        depth = 0.35f,
-                        contrast = 1.2f,
+                        path = pencil.grainAssetPath ?: "",
+                        scale = pencil.grainScale,
+                        canvasLocked = pencil.grainCanvasLocked,
+                        depth = pencil.textureDepth,
+                        contrast = pencil.textureContrast,
                     )
                 }
             },
