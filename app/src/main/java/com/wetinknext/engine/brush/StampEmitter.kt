@@ -107,6 +107,6 @@ class StampEmitter(initialSettings: BrushSettings) {
 
     private fun addDab(x: Float, y: Float, p: Float, tx: Float, ty: Float, out: DabBuffer) {
         BrushDynamics.resolve(settings, p, tx, ty, resolvedDab)
-        out.add(x, y, resolvedDab.radius, 0f, resolvedDab.opacity)
+        out.add(x, y, resolvedDab.radius, 0f, resolvedDab.coverage)
     }
 }
