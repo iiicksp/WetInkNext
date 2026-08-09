@@ -42,16 +42,22 @@ object BrushDynamics {
 
         // Opacity resolution
         var opacityFactor = 1f
+
         if (settings.pressureToOpacity) {
             opacityFactor = p
         }
+
         opacityFactor *= (1f + settings.tiltToOpacity * tilt)
 
-        out.opacity = (settings.opacity * opacityFactor).coerceIn(0f, 1f)
+        out.coverage = opacityFactor.coerceIn(0f, 1f)
+        out.opacity = (
+            settings.opacity * out.coverage
+        ).coerceIn(0f, 1f)
     }
 }
 
 data class ResolvedDab(
     var radius: Float = 0f,
     var opacity: Float = 0f,
+    var coverage: Float = 1f,
 )
