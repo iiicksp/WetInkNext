@@ -4,6 +4,7 @@ import android.content.Context
 import android.opengl.GLSurfaceView
 import android.util.AttributeSet
 import android.view.MotionEvent
+import com.wetinknext.engine.brush.BrushSettings
 import com.wetinknext.engine.brush.TextureLoader
 import com.wetinknext.engine.brush.LoadedBrushTexture
 
@@ -90,6 +91,11 @@ class PaintSurfaceView @JvmOverloads constructor(
 
     fun setBrushOpacity(opacity: Float) = queueEvent { 
         engineRenderer.setBrushOpacity(opacity)
+        requestRender()
+    }
+
+    fun applyBrush(settings: BrushSettings) = queueEvent {
+        engineRenderer.applyBrush(settings)
         requestRender()
     }
 

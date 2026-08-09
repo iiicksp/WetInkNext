@@ -71,4 +71,7 @@ data class BrushSettings(
     val blendPolicy: BlendPolicy = BlendPolicy.NORMAL_BUILDUP,
     val ribbon: RibbonSettings = RibbonSettings(),
     val wet: WetSettings = WetSettings(),
-)
+) {
+    /** Returns a copy with dynamic properties resolved. Placeholder for now. */
+    fun resolved(): BrushSettings = this
+}

@@ -181,6 +181,10 @@ class EngineRenderer(
     fun setBrushColor(color: androidx.compose.ui.graphics.Color) =
         updateBrush(brushSettings.copy(colorArgb = color.toArgb().toLong() and 0xFFFFFFFFL))
 
+    fun applyBrush(settings: BrushSettings) {
+        updateBrush(settings.resolved())
+    }
+
     /** Правка кисти во время штриха больше не отменяет штрих: применяем на следующем DOWN. */
     private fun updateBrush(next: BrushSettings) {
         brushSettings = next
