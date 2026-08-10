@@ -6,29 +6,13 @@ class BlendController {
 
     fun begin(policy: BlendPolicy) {
         GLES30.glEnable(GLES30.GL_BLEND)
-
-        when (policy) {
-            BlendPolicy.NORMAL_BUILDUP -> {
-                GLES30.glBlendEquation(GLES30.GL_FUNC_ADD)
-                GLES30.glBlendFunc(
-                    GLES30.GL_ONE,
-                    GLES30.GL_ONE_MINUS_SRC_ALPHA,
-                )
-            }
-
-            BlendPolicy.NON_BUILDUP -> {
-                /*
-                 * Временная реализация для текущего P7.
-                 * Не считать GL_MAX универсальной моделью всех non-buildup кистей.
-                 * Для некоторых кистей позже понадобится отдельный shader/pass.
-                 */
-                GLES30.glBlendEquation(GLES30.GL_MAX)
-                GLES30.glBlendFunc(
-                    GLES30.GL_ONE,
-                    GLES30.GL_ONE,
-                )
-            }
-        }
+        // NON_BUILDUP needs a dedicated accumulation mask. Until that pass is
+        // introduced, both policies use the correct premultiplied source-over.
+        GLES30.glBlendEquation(GLES30.GL_FUNC_ADD)
+        GLES30.glBlendFunc(
+            GLES30.GL_ONE,
+            GLES30.GL_ONE_MINUS_SRC_ALPHA,
+        )
     }
 
     fun end() {

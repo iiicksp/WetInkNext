@@ -40,17 +40,19 @@ object ShaderLib {
     const val dabVertex = """#version 300 es
         layout(location = 0) in vec2 aCorner;
         layout(location = 1) in vec4 iDab0;
-        layout(location = 2) in float iAlpha;
+        layout(location = 2) in vec2 iDab1;
         uniform mat4 uCanvasToClip;
         uniform vec2 uCanvasSize;
         out vec2 vLocal;
         out vec2 vCanvasUv;
-        flat out float vAlpha;
+        flat out float vCoverage;
+        flat out float vFlow;
         void main(){
             float c=cos(iDab0.w), s=sin(iDab0.w);
             vec2 r=vec2(c*aCorner.x-s*aCorner.y,s*aCorner.x+c*aCorner.y);
             vLocal=aCorner;
-            vAlpha=iAlpha;
+            vCoverage=iDab1.x;
+            vFlow=iDab1.y;
             vec2 p = iDab0.xy+r*iDab0.z;
             vCanvasUv = p / uCanvasSize;
             gl_Position=uCanvasToClip*vec4(p,0.,1.);
@@ -60,30 +62,56 @@ object ShaderLib {
         precision highp float;
         in vec2 vLocal;
         in vec2 vCanvasUv;
-        flat in float vAlpha;
+        flat in float vCoverage;
+        flat in float vFlow;
         uniform vec3 uColorLinear;
         uniform sampler2D uGrainTex;
         uniform int uGrainActive;
         uniform float uGrainScale;
+        uniform int uGrainCanvasLocked;
         uniform float uTextureDepth;
         uniform float uTextureContrast;
         uniform float uStrokeOpacity;
+        uniform sampler2D uShapeTex;
+        uniform int uShapeActive;
+        uniform int uReverseShape;
+        uniform int uRgbToAlpha;
         out vec4 fragColor;
+        float luminance(vec3 color) {
+            return dot(color, vec3(0.299, 0.587, 0.114));
+        }
+        float applyTextureLevels(float value, float contrast, float depth) {
+            float adjusted = clamp((value - 0.5) * contrast + 0.5, 0.0, 1.0);
+            return mix(1.0 - depth, 1.0, adjusted);
+        }
         void main(){
             float r=length(vLocal);
             float aa=max(fwidth(r),.001);
             float cov=1.-smoothstep(1.-aa,1.+aa,r);
             if (cov <= 0.0) discard;
 
-            float grainFactor = 1.0;
-            if (uGrainActive == 1) {
-                vec2 uv = vCanvasUv * max(uGrainScale, 0.0001);
-                float val = texture(uGrainTex, uv).r;
-                val = clamp((val - 0.5) * uTextureContrast + 0.5, 0.0, 1.0);
-                grainFactor = mix(1.0 - uTextureDepth, 1.0, val);
+            float shapeMask = 1.0;
+            if (uShapeActive == 1) {
+                vec2 shapeUv = vLocal * 0.5 + 0.5;
+                vec4 shapeColor = texture(uShapeTex, shapeUv);
+                shapeMask = uRgbToAlpha == 1
+                    ? dot(shapeColor.rgb, vec3(0.299, 0.587, 0.114))
+                    : shapeColor.a;
+                if (uReverseShape == 1) shapeMask = 1.0 - shapeMask;
             }
 
-            float a = vAlpha * cov * grainFactor * uStrokeOpacity;
+            float grainFactor = 1.0;
+            if (uGrainActive == 1) {
+                vec2 uv = uGrainCanvasLocked == 1
+                    ? vCanvasUv * max(uGrainScale, 0.0001)
+                    : (vLocal * 0.5 + 0.5) * max(uGrainScale, 0.0001);
+                vec4 grainColor = texture(uGrainTex, uv);
+                grainFactor = applyTextureLevels(
+                    luminance(grainColor.rgb), uTextureContrast, uTextureDepth
+                );
+            }
+
+            float a = vCoverage * vFlow * cov * shapeMask * grainFactor * uStrokeOpacity;
             fragColor=vec4(uColorLinear*a,a);
         }
     """
@@ -138,14 +166,14 @@ object ShaderLib {
      */
     const val capsuleVertex = """#version 300 es
         layout(location = 0) in vec2 aCorner;   // -1..1, TRIANGLE_STRIP из 4 вершин
-        layout(location = 1) in vec3 iA;        // x, y, radius (начало сегмента)
-        layout(location = 2) in vec3 iB;        // x, y, radius (конец сегмента)
+        layout(location = 1) in vec4 iA;        // x, y, radius, coverage (начало сегмента)
+        layout(location = 2) in vec4 iB;        // x, y, radius, coverage (конец сегмента)
         uniform mat4 uCanvasToClip;
         uniform vec2 uCanvasSize;
         out vec2 vPos;
         out vec2 vCanvasUv;
-        flat out vec3 vA;
-        flat out vec3 vB;
+        flat out vec4 vA;
+        flat out vec4 vB;
         void main() {
             // Запас 2 px на AA-переход, иначе край обрежется по границе квада.
             vec2 lo = min(iA.xy - iA.z, iB.xy - iB.z) - 2.0;
@@ -162,15 +190,15 @@ object ShaderLib {
     /**
      * Аналитическое покрытие: нет каппов, джойнов, miter и AA-юбки как отдельных сущностей.
      * Выход строго premultiplied linear: rgb = color * a, a = cov.
-     * Рисовать ТОЛЬКО с glBlendEquation(GL_MAX) + glBlendFunc(GL_ONE, GL_ONE):
-     * MAX идемпотентен, поэтому перекрытия сегментов не накапливают альфу.
+     * Рисовать premultiplied source-over blending:
+     * GL_FUNC_ADD + GL_ONE, GL_ONE_MINUS_SRC_ALPHA.
      */
     const val capsuleFragment = """#version 300 es
         precision highp float;
         in vec2 vPos;
         in vec2 vCanvasUv;
-        flat in vec3 vA;
-        flat in vec3 vB;
+        flat in vec4 vA;
+        flat in vec4 vB;
         uniform vec3 uColorLinear;
         uniform sampler2D uGrainTex;
         uniform int uGrainActive;
@@ -221,7 +249,8 @@ object ShaderLib {
                 grainFactor = mix(1.0 - uTextureDepth, 1.0, val);
             }
 
-            float finalAlpha = cov * grainFactor;
+            float segmentCoverage = mix(vA.w, vB.w, 0.5);
+            float finalAlpha = cov * segmentCoverage * grainFactor;
             fragColor = vec4(uColorLinear * finalAlpha, finalAlpha);
         }
     """

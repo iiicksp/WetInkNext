@@ -21,7 +21,7 @@ import java.nio.ByteOrder
  *
  * Важно:
  * - target должен быть очищен перед началом нового штриха;
- * - рисование выполняется с GL_MAX;
+ * - рисование использует premultiplied source-over blending;
  * - цвет должен быть постоянным для всего strokeTarget;
  * - выход shader: premultiplied linear RGBA.
  */
@@ -213,7 +213,7 @@ class CapsuleStrokeRenderer(
         GLES30.glEnableVertexAttribArray(ATTR_SEGMENT_A)
         GLES30.glVertexAttribPointer(
             ATTR_SEGMENT_A,
-            3,
+            4,
             GLES30.GL_FLOAT,
             false,
             STRIDE_BYTES,
@@ -228,11 +228,11 @@ class CapsuleStrokeRenderer(
         GLES30.glEnableVertexAttribArray(ATTR_SEGMENT_B)
         GLES30.glVertexAttribPointer(
             ATTR_SEGMENT_B,
-            3,
+            4,
             GLES30.GL_FLOAT,
             false,
             STRIDE_BYTES,
-            3 * Float.SIZE_BYTES,
+            4 * Float.SIZE_BYTES,
         )
         GLES30.glVertexAttribDivisor(
             ATTR_SEGMENT_B,
@@ -276,9 +276,11 @@ class CapsuleStrokeRenderer(
         x0: Float,
         y0: Float,
         radius0: Float,
+        coverage0: Float,
         x1: Float,
         y1: Float,
         radius1: Float,
+        coverage1: Float,
     ): Boolean {
         if (segmentCount >= maxSegments) {
             overflowCount++
@@ -290,10 +292,12 @@ class CapsuleStrokeRenderer(
         instanceData.put(offset, x0)
         instanceData.put(offset + 1, y0)
         instanceData.put(offset + 2, radius0.coerceAtLeast(0.01f))
+        instanceData.put(offset + 3, coverage0.coerceIn(0f, 1f))
 
-        instanceData.put(offset + 3, x1)
-        instanceData.put(offset + 4, y1)
-        instanceData.put(offset + 5, radius1.coerceAtLeast(0.01f))
+        instanceData.put(offset + 4, x1)
+        instanceData.put(offset + 5, y1)
+        instanceData.put(offset + 6, radius1.coerceAtLeast(0.01f))
+        instanceData.put(offset + 7, coverage1.coerceIn(0f, 1f))
 
         segmentCount++
         return true
@@ -493,7 +497,7 @@ class CapsuleStrokeRenderer(
          */
         GLES30.glVertexAttribPointer(
             ATTR_SEGMENT_A,
-            3,
+            4,
             GLES30.GL_FLOAT,
             false,
             STRIDE_BYTES,
@@ -502,11 +506,11 @@ class CapsuleStrokeRenderer(
 
         GLES30.glVertexAttribPointer(
             ATTR_SEGMENT_B,
-            3,
+            4,
             GLES30.GL_FLOAT,
             false,
             STRIDE_BYTES,
-            firstSegment * STRIDE_BYTES + 3 * Float.SIZE_BYTES,
+            firstSegment * STRIDE_BYTES + 4 * Float.SIZE_BYTES,
         )
 
         GLES30.glDrawArraysInstanced(
@@ -656,7 +660,7 @@ class CapsuleStrokeRenderer(
 
         private const val CORNER_VERTEX_COUNT = 4
 
-        const val FLOATS_PER_SEGMENT = 6
+        const val FLOATS_PER_SEGMENT = 8
         const val STRIDE_BYTES =
             FLOATS_PER_SEGMENT * Float.SIZE_BYTES
 

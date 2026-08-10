@@ -51,8 +51,26 @@ class TextureLoader(
             .allocateDirect(width * height * 4)
             .order(ByteOrder.nativeOrder())
 
-        bitmap.copyPixelsToBuffer(rgba)
-        rgba.position(0)
+        // Bitmap stores ARGB_8888 pixels as packed ARGB ints. Uploading that
+        // buffer directly makes the byte order platform-dependent; GLES expects
+        // the explicit RGBA byte sequence declared in BrushTexture.
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(
+            pixels,
+            0,
+            width,
+            0,
+            0,
+            width,
+            height,
+        )
+        for (pixel in pixels) {
+            rgba.put(((pixel ushr 16) and 0xFF).toByte())
+            rgba.put(((pixel ushr 8) and 0xFF).toByte())
+            rgba.put((pixel and 0xFF).toByte())
+            rgba.put(((pixel ushr 24) and 0xFF).toByte())
+        }
+        rgba.flip()
 
         if (bitmap !== source && !bitmap.isRecycled) {
             bitmap.recycle()

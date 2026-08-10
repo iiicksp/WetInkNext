@@ -74,7 +74,15 @@ class StrokeInputCapturer(private val camera: Camera, private val pool: InputBat
             tiltOut[0], tiltOut[1], orientation,
             event.eventTime * 1_000_000L, id, tool, false
         )
-        if(!queue.offer(batch)){pool.release(batch);droppedBatches++;return false};return true
+        if (!queue.offer(batch)) {
+            pool.release(batch)
+            droppedBatches++
+            if (action == InputAction.UP) {
+                enqueueEmpty(InputAction.CANCEL)
+            }
+            return false
+        }
+        return true
     }
 
     private fun enqueueEmpty(action:InputAction):Boolean {

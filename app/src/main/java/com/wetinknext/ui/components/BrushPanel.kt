@@ -259,7 +259,7 @@ private fun BrushItem(
                         maxLines = 1,
                     )
                     Text(
-                        text = "Размер: ${brush.settings.baseRadiusPx.toInt()} px",
+                        text = "Размер: ${(brush.settings.baseRadiusPx * 2f).toInt()} px",
                         color = theme.textSecondary,
                         fontSize = 12.sp,
                         maxLines = 1,
