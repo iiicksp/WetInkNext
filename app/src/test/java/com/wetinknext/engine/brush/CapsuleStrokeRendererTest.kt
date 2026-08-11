@@ -4,8 +4,15 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.wetinknext.engine.gl.ShaderLib
 
 class CapsuleStrokeRendererTest {
+
+    @Test
+    fun capsuleShaderAppliesFlowInsideTheStrokeTarget() {
+        assertTrue(ShaderLib.capsuleFragment.contains("uniform float uFlow"))
+        assertTrue(ShaderLib.capsuleFragment.contains("grainFactor * uFlow"))
+    }
 
     @Test
     fun initiallyEmpty() {

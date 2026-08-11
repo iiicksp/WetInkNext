@@ -462,12 +462,9 @@ class EngineRenderer(
             } else {
                 0
             },
-            strokeOpacity = if (frameStrokeBrush?.renderMode == BrushRenderMode.STAMP) {
-                frameStrokeBrush.opacity.coerceIn(0f, 1f)
-            } else {
-                ((frameStrokeBrush ?: brushSettings).opacity * (frameStrokeBrush ?: brushSettings).flow)
-                    .coerceIn(0f, 1f)
-            },
+            // Both render modes write their local flow into strokeTarget. The
+            // compositor therefore applies only the snapshot's global opacity.
+            strokeOpacity = frameStrokeBrush?.opacity?.coerceIn(0f, 1f) ?: 1f,
             canvasToClip = canvasToClipMatrix,
         )
     }
@@ -1069,6 +1066,7 @@ class EngineRenderer(
             canvasToClip = canvasToFboMatrix,
             colorLinear = activeStrokeColorLinear,
             blendPolicy = strokeBrush.blendPolicy,
+            flow = strokeBrush.flow,
         )
     }
 
@@ -1099,6 +1097,7 @@ class EngineRenderer(
             canvasToClip = canvasToFboMatrix,
             colorLinear = activeStrokeColorLinear,
             blendPolicy = strokeBrush.blendPolicy,
+            flow = strokeBrush.flow,
         )
 
         val beforeRaw = TileSnapshotCapture.capture(

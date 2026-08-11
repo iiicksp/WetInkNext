@@ -206,6 +206,7 @@ object ShaderLib {
         uniform int uGrainCanvasLocked;
         uniform float uTextureDepth;
         uniform float uTextureContrast;
+        uniform float uFlow;
         out vec4 fragColor;
 
         float sdRoundCone(vec2 p, vec2 a, vec2 b, float r1, float r2) {
@@ -250,7 +251,7 @@ object ShaderLib {
             }
 
             float segmentCoverage = mix(vA.w, vB.w, 0.5);
-            float finalAlpha = cov * segmentCoverage * grainFactor;
+            float finalAlpha = cov * segmentCoverage * grainFactor * uFlow;
             fragColor = vec4(uColorLinear * finalAlpha, finalAlpha);
         }
     """

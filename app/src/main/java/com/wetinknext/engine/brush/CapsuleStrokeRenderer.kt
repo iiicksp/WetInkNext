@@ -44,6 +44,7 @@ class CapsuleStrokeRenderer(
     private var uGrainCanvasLocked = -1
     private var uTextureDepth = -1
     private var uTextureContrast = -1
+    private var uFlow = -1
 
     private var grainTextureId = 0
     private var grainScale = 1f
@@ -132,6 +133,10 @@ class CapsuleStrokeRenderer(
             currentProgram.id,
             "uTextureContrast",
         )
+        uFlow = GLES30.glGetUniformLocation(
+            currentProgram.id,
+            "uFlow",
+        )
 
         check(uCanvasToClip >= 0) {
             "Capsule shader uniform uCanvasToClip is missing"
@@ -141,6 +146,9 @@ class CapsuleStrokeRenderer(
         }
         check(uCanvasSize >= 0) {
             "Capsule shader uniform uCanvasSize is missing"
+        }
+        check(uFlow >= 0) {
+            "Capsule shader uniform uFlow is missing"
         }
 
         val corners = floatArrayOf(
@@ -316,6 +324,7 @@ class CapsuleStrokeRenderer(
         canvasToClip: FloatArray,
         colorLinear: FloatArray,
         blendPolicy: BlendPolicy,
+        flow: Float,
     ) {
         val first = uploadedSegmentCount
         val count = segmentCount - uploadedSegmentCount
@@ -331,6 +340,7 @@ class CapsuleStrokeRenderer(
             firstSegment = first,
             count = count,
             blendPolicy = blendPolicy,
+            flow = flow,
         )
 
         if (drawn) {
@@ -350,6 +360,7 @@ class CapsuleStrokeRenderer(
         canvasToClip: FloatArray,
         colorLinear: FloatArray,
         blendPolicy: BlendPolicy,
+        flow: Float,
     ) {
         if (segmentCount <= 0) return
 
@@ -362,6 +373,7 @@ class CapsuleStrokeRenderer(
             firstSegment = 0,
             count = segmentCount,
             blendPolicy = blendPolicy,
+            flow = flow,
         )
     }
 
@@ -380,6 +392,7 @@ class CapsuleStrokeRenderer(
         firstSegment: Int,
         count: Int,
         blendPolicy: BlendPolicy,
+        flow: Float,
     ): Boolean {
         val currentProgram = program ?: return false
 
@@ -454,6 +467,11 @@ class CapsuleStrokeRenderer(
         GLES30.glUniform1f(
             uTextureContrast,
             textureContrast,
+        )
+
+        GLES30.glUniform1f(
+            uFlow,
+            flow.coerceIn(0f, 1f),
         )
 
         if (grainTextureId != 0) {
@@ -634,6 +652,7 @@ class CapsuleStrokeRenderer(
         uGrainCanvasLocked = -1
         uTextureDepth = -1
         uTextureContrast = -1
+        uFlow = -1
         grainTextureId = 0
 
         segmentCount = 0
