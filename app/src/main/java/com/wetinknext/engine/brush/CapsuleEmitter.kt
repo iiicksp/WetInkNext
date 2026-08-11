@@ -26,6 +26,7 @@ import kotlin.math.pow
 class CapsuleEmitter(
     private var settings: BrushSettings,
 ) {
+    private var strokeSettings: BrushSettings? = null
     private val stabilizer = Stabilizer()
     private val pressureFilter = PressureFilter()
     private val resolvedDab = ResolvedDab()
@@ -37,12 +38,15 @@ class CapsuleEmitter(
     private var lastX = 0f
     private var lastY = 0f
     private var lastRadius = 0f
+    private var lastCoverage = 1f
 
     // Окно точек для интерполяции P0, P1, P2, P3
     private var p0x = 0f; private var p0y = 0f; private var p0r = 0f
     private var p1x = 0f; private var p1y = 0f; private var p1r = 0f
     private var p2x = 0f; private var p2y = 0f; private var p2r = 0f
     private var p3x = 0f; private var p3y = 0f; private var p3r = 0f
+    private var p0c = 1f; private var p1c = 1f
+    private var p2c = 1f; private var p3c = 1f
     private var pointsInWindow = 0
 
     private var emittedSegments = 0
@@ -69,7 +73,13 @@ class CapsuleEmitter(
         private set
 
     fun updateSettings(value: BrushSettings) {
-        settings = value
+        // Active stroke reads strokeSettings; this value is for the next begin().
+        settings = value.resolved()
+    }
+
+    private fun activeSettings(): BrushSettings {
+        check(active) { "Capsule emitter has no active stroke" }
+        return strokeSettings ?: error("Missing stroke settings")
     }
 
     /**
@@ -78,12 +88,14 @@ class CapsuleEmitter(
      */
     fun reset() {
         active = false
+        strokeSettings = null
         pointerId = -1
 
         hasLastPoint = false
         lastX = 0f
         lastY = 0f
         lastRadius = 0f
+        lastCoverage = 1f
 
         pointsInWindow = 0
 
@@ -110,9 +122,12 @@ class CapsuleEmitter(
     fun begin(
         batch: InputBatch,
         out: CapsuleStrokeRenderer,
+        strokeSettings: BrushSettings = settings,
     ) {
         reset()
         out.beginStroke()
+        val resolvedSettings = strokeSettings.resolved()
+        this.strokeSettings = resolvedSettings
 
         if (batch.sampleCount <= 0) return
 
@@ -122,8 +137,8 @@ class CapsuleEmitter(
         pointerId = sample.pointerId
 
         stabilizer.strength = (
-            settings.smoothing * SMOOTHING_WEIGHT +
-                settings.streamline * STREAMLINE_WEIGHT
+            resolvedSettings.smoothing * SMOOTHING_WEIGHT +
+                resolvedSettings.streamline * STREAMLINE_WEIGHT
             ).coerceIn(0f, 1f)
 
         stabilizer.process(
@@ -135,12 +150,14 @@ class CapsuleEmitter(
         val x = stabilizer.x
         val y = stabilizer.y
         val filteredPressure = pressureFilter.filter(sample.timestampNanos, sample.pressure)
-        BrushDynamics.resolve(settings, filteredPressure, sample.tiltX, sample.tiltY, resolvedDab)
+        BrushDynamics.resolve(resolvedSettings, filteredPressure, sample.tiltX, sample.tiltY, resolvedDab)
         val radius = resolvedDab.radius
+        val coverage = resolvedDab.coverage
 
         lastX = x
         lastY = y
         lastRadius = radius
+        lastCoverage = coverage
         hasLastPoint = true
         hasStroke = true
 
@@ -148,6 +165,7 @@ class CapsuleEmitter(
         p0x = x; p0y = y; p0r = radius
         p1x = x; p1y = y; p1r = radius
         p2x = x; p2y = y; p2r = radius
+        p0c = coverage; p1c = coverage; p2c = coverage
         pointsInWindow = 1
 
         // Вырожденный сегмент: круглый dab/tap.
@@ -155,9 +173,11 @@ class CapsuleEmitter(
             x0 = x,
             y0 = y,
             radius0 = radius,
+            coverage0 = coverage,
             x1 = x,
             y1 = y,
             radius1 = radius,
+            coverage1 = coverage,
         )
         emittedSegments++
 
@@ -175,6 +195,7 @@ class CapsuleEmitter(
         out: CapsuleStrokeRenderer,
     ) {
         if (!active || batch.sampleCount <= 0) return
+        val settings = activeSettings()
 
         for (index in 0 until batch.sampleCount) {
             val sample = batch.samples[index]
@@ -194,11 +215,13 @@ class CapsuleEmitter(
             val filteredPressure = pressureFilter.filter(sample.timestampNanos, sample.pressure)
             BrushDynamics.resolve(settings, filteredPressure, sample.tiltX, sample.tiltY, resolvedDab)
             val radius = resolvedDab.radius
+            val coverage = resolvedDab.coverage
 
             emitPoint(
                 x = x,
                 y = y,
                 radius = radius,
+                coverage = coverage,
                 out = out,
             )
         }
@@ -215,6 +238,7 @@ class CapsuleEmitter(
         cancel: Boolean,
     ) {
         if (!active) return
+        val settings = activeSettings()
 
         if (cancel) {
             reset()
@@ -226,9 +250,10 @@ class CapsuleEmitter(
         if (pointsInWindow >= 2 && settings.smoothing > 1e-4f) {
             interpolate(
                 p0x, p0y, p0r,
-                p1x, p1y, p1r,
-                p2x, p2y, p2r,
-                p2x, p2y, p2r,
+                p0c,
+                p1x, p1y, p1r, p1c,
+                p2x, p2y, p2r, p2c,
+                p2x, p2y, p2r, p2c,
                 out,
             )
         }
@@ -241,8 +266,10 @@ class CapsuleEmitter(
         x: Float,
         y: Float,
         radius: Float,
+        coverage: Float,
         out: CapsuleStrokeRenderer,
     ) {
+        val settings = activeSettings()
         val dx = x - lastX
         val dy = y - lastY
         val distance = hypot(dx, dy)
@@ -253,7 +280,7 @@ class CapsuleEmitter(
 
         if (settings.smoothing <= 1e-4f) {
             // Raw mode: прямые сегменты без задержки на окно
-            out.addSegment(lastX, lastY, lastRadius, x, y, radius)
+            out.addSegment(lastX, lastY, lastRadius, lastCoverage, x, y, radius, coverage)
             emittedSegments++
             totalLength += distance
             includeBounds(lastX, lastY, lastRadius)
@@ -262,16 +289,16 @@ class CapsuleEmitter(
             // Interpolated mode: Catmull-Rom через окно
             when (pointsInWindow) {
                 1 -> {
-                    p2x = x; p2y = y; p2r = radius
+                    p2x = x; p2y = y; p2r = radius; p2c = coverage
                     pointsInWindow = 2
                 }
                 2 -> {
-                    p3x = x; p3y = y; p3r = radius
-                    interpolate(p0x, p0y, p0r, p1x, p1y, p1r, p2x, p2y, p2r, p3x, p3y, p3r, out)
+                    p3x = x; p3y = y; p3r = radius; p3c = coverage
+                    interpolate(p0x, p0y, p0r, p0c, p1x, p1y, p1r, p1c, p2x, p2y, p2r, p2c, p3x, p3y, p3r, p3c, out)
                     // Сдвиг окна
-                    p0x = p1x; p0y = p1y; p0r = p1r
-                    p1x = p2x; p1y = p2y; p1r = p2r
-                    p2x = p3x; p2y = p3y; p2r = p3r
+                    p0x = p1x; p0y = p1y; p0r = p1r; p0c = p1c
+                    p1x = p2x; p1y = p2y; p1r = p2r; p1c = p2c
+                    p2x = p3x; p2y = p3y; p2r = p3r; p2c = p3c
                 }
             }
         }
@@ -280,16 +307,17 @@ class CapsuleEmitter(
         lastX = x
         lastY = y
         lastRadius = radius
+        lastCoverage = coverage
     }
 
     /**
      * Адаптивная интерполяция сегмента P1-P2 с использованием P0 и P3 как контрольных точек.
      */
     private fun interpolate(
-        p0x: Float, p0y: Float, p0r: Float,
-        p1x: Float, p1y: Float, p1r: Float,
-        p2x: Float, p2y: Float, p2r: Float,
-        p3x: Float, p3y: Float, p3r: Float,
+        p0x: Float, p0y: Float, p0r: Float, p0c: Float,
+        p1x: Float, p1y: Float, p1r: Float, p1c: Float,
+        p2x: Float, p2y: Float, p2r: Float, p2c: Float,
+        p3x: Float, p3y: Float, p3r: Float, p3c: Float,
         out: CapsuleStrokeRenderer
     ) {
         val dist = hypot(p2x - p1x, p2y - p1y)
@@ -309,6 +337,7 @@ class CapsuleEmitter(
         var prevX = p1x
         var prevY = p1y
         var prevR = p1r
+        var prevCoverage = p1c
 
         for (i in 1..steps) {
             val t = i.toFloat() / steps
@@ -320,8 +349,9 @@ class CapsuleEmitter(
             
             // Линейная интерполяция радиуса
             val r = p1r + (p2r - p1r) * t
+            val coverage = p1c + (p2c - p1c) * t
 
-            out.addSegment(prevX, prevY, prevR, x, y, r)
+            out.addSegment(prevX, prevY, prevR, prevCoverage, x, y, r, coverage)
             emittedSegments++
             totalLength += hypot(x - prevX, y - prevY)
             includeBounds(x, y, r)
@@ -329,6 +359,7 @@ class CapsuleEmitter(
             prevX = x
             prevY = y
             prevR = r
+            prevCoverage = coverage
         }
     }
 
@@ -337,6 +368,7 @@ class CapsuleEmitter(
      * segment shader сам покрывает весь отрезок между A и B.
      */
     private fun minimumPointDistance(): Float {
+        val settings = activeSettings()
         val configured = settings.ribbon.minPointDistancePx
             .coerceIn(MIN_POINT_DISTANCE_MIN, MAX_POINT_DISTANCE)
 

@@ -38,10 +38,15 @@ class RenderTarget {
 
     fun clear(red: Float, green: Float, blue: Float, alpha: Float) {
         bind()
+        // Clearing is constrained by the current viewport. Always restore the
+        // offscreen target's extent, not the last screen-sized present viewport.
+        GLES30.glViewport(0, 0, width, height)
         GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
         GLES30.glDisable(GLES30.GL_BLEND)
+        GLES30.glColorMask(true, true, true, true)
         GLES30.glClearColor(red, green, blue, alpha)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
     }
 
     fun release() {

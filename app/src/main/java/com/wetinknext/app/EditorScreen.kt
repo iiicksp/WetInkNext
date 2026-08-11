@@ -1,11 +1,18 @@
 package com.wetinknext.app
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalContext
@@ -19,6 +26,9 @@ import com.wetinknext.ui.color.GlesColorState
 import com.wetinknext.ui.components.*
 import com.wetinknext.ui.state.LayerState
 import com.wetinknext.ui.theme.WetInkTheme
+import com.wetinknext.ui.theme.AppTheme
+import com.wetinknext.ui.theme.AppThemes
+import com.wetinknext.ui.theme.ThemeController
 import com.wetinknext.ui.theme.rememberThemeController
 
 private enum class EditorPanel {
@@ -29,7 +39,8 @@ private enum class EditorPanel {
     SELECTION,
     TRANSFORM,
     ADJUSTMENTS,
-    ANIMATION
+    ANIMATION,
+    SETTINGS,
 }
 
 @Composable
@@ -66,6 +77,10 @@ fun EditorScreen(
         selectedBrush = BrushLibrary.pencil6B
     }
 
+    LaunchedEffect(theme.id) {
+        surface.setCanvasBackdrop(theme.canvasBackdrop.toArgb(), theme.canvasGrid.toArgb())
+    }
+
     WetInkTheme(theme = theme, fontMode = themeController.font) {
         Box(
             modifier = Modifier
@@ -80,8 +95,7 @@ fun EditorScreen(
             // Top Toolbar
             Box(
                 modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 12.dp)
+                    .align(Alignment.TopEnd)
             ) {
                 TopToolbar(
                     theme = theme,
@@ -106,6 +120,9 @@ fun EditorScreen(
                     onAdjustmentsClick = {
                         openPanel = if (openPanel == EditorPanel.ADJUSTMENTS) EditorPanel.NONE else EditorPanel.ADJUSTMENTS
                     },
+                    onSettingsClick = {
+                        openPanel = if (openPanel == EditorPanel.SETTINGS) EditorPanel.NONE else EditorPanel.SETTINGS
+                    },
                     onLayersClick = {
                         openPanel = if (openPanel == EditorPanel.LAYERS) EditorPanel.NONE else EditorPanel.LAYERS
                     },
@@ -115,11 +132,12 @@ fun EditorScreen(
                 )
             }
 
-            // Side Toolbar
-            Box(
+            // Left controls keep the same compact stack as the reference editor.
+            Column(
                 modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = 12.dp)
+                    .align(Alignment.TopStart)
+                    .padding(top = 100.dp),
+                horizontalAlignment = Alignment.Start,
             ) {
                 SideToolbar(
                     theme = theme,
@@ -133,6 +151,11 @@ fun EditorScreen(
                     },
                     onEraserClick = { isEraser = it }
                 )
+                LeftCanvasActions(
+                    theme = theme,
+                    onClearLayerClick = { surface.clearActiveLayer() },
+                    onMirrorClick = { surface.toggleCanvasMirror() },
+                )
             }
 
             // Panel Host
@@ -144,6 +167,7 @@ fun EditorScreen(
                 colorState = colorState,
                 brushColor = brushColor,
                 selectedBrush = selectedBrush,
+                themeController = themeController,
                 onBrushSelected = { preset ->
                     selectedBrush = preset
                     surface.applyBrushPreset(preset)
@@ -167,6 +191,7 @@ private fun EditorPanelHost(
     colorState: GlesColorState,
     brushColor: Color,
     selectedBrush: BrushPreset?,
+    themeController: ThemeController,
     onBrushSelected: (BrushPreset) -> Unit,
     onColorChange: (Color) -> Unit,
     onDismiss: () -> Unit
@@ -174,9 +199,19 @@ private fun EditorPanelHost(
     Box(modifier = Modifier.fillMaxSize()) {
         when (panel) {
             EditorPanel.NONE -> Unit
+
+            EditorPanel.SETTINGS -> {
+                Box(modifier = Modifier.align(Alignment.TopEnd).padding(top = 70.dp, end = 16.dp)) {
+                    ThemeSettingsPanel(
+                        theme = theme,
+                        themeController = themeController,
+                        onDismiss = onDismiss,
+                    )
+                }
+            }
             
             EditorPanel.BRUSH -> {
-                Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)) {
+                Box(modifier = Modifier.align(Alignment.CenterStart).padding(start = 72.dp)) {
                     BrushPanel(
                         currentBrush = selectedBrush ?: BrushLibrary.pencil6B,
                         onBrushSelect = onBrushSelected,
@@ -190,7 +225,7 @@ private fun EditorPanelHost(
             }
 
             EditorPanel.LAYERS -> {
-                Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)) {
+                Box(modifier = Modifier.align(Alignment.TopEnd).padding(top = 80.dp, end = 16.dp)) {
                     LayersPanel(
                         state = layerState,
                         theme = theme,
@@ -205,7 +240,7 @@ private fun EditorPanelHost(
             }
 
             EditorPanel.COLOR -> {
-                Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)) {
+                Box(modifier = Modifier.align(Alignment.TopEnd).padding(top = 80.dp, end = 16.dp)) {
                     ColorPanel(
                         state = colorState,
                         color = brushColor,
@@ -218,7 +253,7 @@ private fun EditorPanelHost(
             }
 
             EditorPanel.SELECTION -> {
-                Box(modifier = Modifier.align(Alignment.BottomCenter)) {
+                Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp)) {
                     SelectionToolbar(
                         theme = theme,
                         currentShape = SelectionShapeUi.FREEHAND,
@@ -229,7 +264,7 @@ private fun EditorPanelHost(
             }
 
             EditorPanel.TRANSFORM -> {
-                Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 20.dp)) {
+                Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp)) {
                     TransformMenuView(
                         theme = theme,
                         currentMode = TransformModeUi.UNIFORM,
@@ -246,7 +281,7 @@ private fun EditorPanelHost(
             }
 
             EditorPanel.ADJUSTMENTS -> {
-                Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 12.dp)) {
+                Box(modifier = Modifier.align(Alignment.TopEnd).padding(top = 80.dp, end = 16.dp)) {
                     AdjustmentsPanel(
                         theme = theme,
                         onClose = onDismiss,
@@ -278,6 +313,90 @@ private fun EditorPanelHost(
     }
 }
 
+@Composable
+private fun ThemeSettingsPanel(
+    theme: AppTheme,
+    themeController: ThemeController,
+    onDismiss: () -> Unit,
+) {
+    var preferencesOpen by remember { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .width(320.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(theme.panelBg)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            androidx.compose.material3.Text(
+                text = if (preferencesOpen) "Предпочтения" else "Меню",
+                color = theme.textPrimary,
+                style = androidx.compose.material3.MaterialTheme.typography.titleLarge,
+                modifier = Modifier.weight(1f),
+            )
+            androidx.compose.material3.Text(
+                text = "×",
+                color = theme.textSecondary,
+                style = androidx.compose.material3.MaterialTheme.typography.headlineSmall,
+                modifier = Modifier.size(28.dp).clickable(onClick = onDismiss),
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                .background(theme.panelBgVariant.copy(alpha = .5f)).padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            listOf("Меню", "Холст", "Экспорт", "Сведения").forEachIndexed { index, label ->
+                Box(
+                    modifier = Modifier
+                        .weight(1f).clip(RoundedCornerShape(8.dp))
+                        .background(if (index == 0) theme.panelBgVariant else Color.Transparent)
+                        .padding(vertical = 8.dp),
+                    contentAlignment = Alignment.Center,
+                ) { androidx.compose.material3.Text(label, color = if (index == 0) theme.textPrimary else theme.textSecondary, style = androidx.compose.material3.MaterialTheme.typography.labelSmall) }
+            }
+        }
+
+        if (!preferencesOpen) {
+            androidx.compose.material3.Text(
+                text = "Предпочтения",
+                color = theme.textPrimary,
+                modifier = Modifier.fillMaxWidth().clickable { preferencesOpen = true }.padding(vertical = 14.dp, horizontal = 4.dp),
+            )
+        } else {
+            androidx.compose.material3.Text("Тема", color = theme.textSecondary, style = androidx.compose.material3.MaterialTheme.typography.labelMedium)
+            val choices = AppThemes.all + themeController.customTheme.copy(id = "custom", displayName = "Своя")
+            choices.chunked(5).forEach { row ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    row.forEach { candidate ->
+                        val selected = candidate.id == themeController.current.id
+                        Box(
+                            modifier = Modifier.size(48.dp).clip(androidx.compose.foundation.shape.CircleShape)
+                                .background(if (selected) Color.White else Color.Transparent)
+                                .clickable { if (candidate.id == "custom") themeController.selectCustom() else themeController.select(candidate) }
+                                .padding(2.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Box(
+                                modifier = Modifier.fillMaxSize().clip(androidx.compose.foundation.shape.CircleShape)
+                                    .background(if (candidate.id == "custom") theme.panelBgVariant else candidate.appBg),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (candidate.id == "custom") androidx.compose.material3.Text("Своя", color = Color.White, style = androidx.compose.material3.MaterialTheme.typography.labelSmall)
+                                else Box(Modifier.size(24.dp).clip(androidx.compose.foundation.shape.CircleShape).background(candidate.accent))
+                            }
+                        }
+                    }
+                    repeat(5 - row.size) { Spacer(Modifier.size(48.dp)) }
+                }
+            }
+            androidx.compose.material3.Text(themeController.current.displayName, color = theme.textPrimary)
+        }
+    }
+}
+
 private fun PaintSurfaceView.applyBrushPreset(
     preset: BrushPreset
 ) {
@@ -291,14 +410,20 @@ private fun PaintSurfaceView.applyBrushPreset(
 
     if (grainPath == null) {
         clearGrainTexture()
-        return
+    } else {
+        loadGrainTexture(
+            path = grainPath,
+            scale = settings.grainScale,
+            canvasLocked = settings.grainCanvasLocked,
+            depth = settings.textureDepth,
+            contrast = settings.textureContrast,
+        )
     }
 
-    loadGrainTexture(
-        path = grainPath,
-        scale = settings.grainScale,
-        canvasLocked = settings.grainCanvasLocked,
-        depth = settings.textureDepth,
-        contrast = settings.textureContrast,
-    )
+    val shapePath = settings.shapeAssetPath?.trim()?.takeIf { it.isNotEmpty() }
+    if (shapePath == null) {
+        clearShapeTexture()
+    } else {
+        loadShapeTexture(path = shapePath, rgbToAlpha = settings.rgbToAlpha)
+    }
 }

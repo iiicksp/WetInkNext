@@ -34,6 +34,10 @@ data class BrushSettings(
     val name: String = "Debug Stamp",
     val category: String = "Debug",
     val renderMode: BrushRenderMode = BrushRenderMode.STAMP,
+    /**
+     * Internal brush radius in document pixels.
+     * UI displays diameter = baseRadiusPx * 2.
+     */
     val baseRadiusPx: Float = 14f,
     val opacity: Float = 1f,
     val flow: Float = 1f,
@@ -72,6 +76,66 @@ data class BrushSettings(
     val ribbon: RibbonSettings = RibbonSettings(),
     val wet: WetSettings = WetSettings(),
 ) {
-    /** Returns a copy with dynamic properties resolved. Placeholder for now. */
-    fun resolved(): BrushSettings = this
+    /** Returns a settings copy safe for every engine path. */
+    fun resolved(): BrushSettings {
+        val safeRadius = baseRadiusPx.coerceIn(0.25f, 4096f)
+        val safeOpacity = opacity.coerceIn(0f, 1f)
+        val safeFlow = flow.coerceIn(0f, 1f)
+        val safeSpacing = spacing.coerceIn(0.001f, 4f)
+        val safeGamma = pressureGamma.coerceIn(0.05f, 8f)
+        val safeMinSize = minSizeRatio.coerceIn(0.01f, 1f)
+
+        val safeVelocityToSize = velocityToSize.coerceIn(0f, 1f)
+        val safeVelocityToOpacity = velocityToOpacity.coerceIn(0f, 1f)
+        val safeTiltToSize = tiltToSize.coerceIn(0f, 1f)
+        val safeTiltToOpacity = tiltToOpacity.coerceIn(0f, 1f)
+        val safeTiltToRotation = tiltToRotation.coerceIn(0f, 1f)
+        val safeSizeJitter = sizeJitter.coerceIn(0f, 1f)
+        val safeOpacityJitter = opacityJitter.coerceIn(0f, 1f)
+        val safeRotationJitter = rotationJitter.coerceIn(0f, 1f)
+        val safeScatter = scatter.coerceAtLeast(0f)
+
+        val safeGrainScale = grainScale.coerceIn(0.0001f, 256f)
+        val safeTextureDepth = textureDepth.coerceIn(0f, 1f)
+        val safeTextureContrast = textureContrast.coerceIn(0f, 4f)
+        val safeAa = antiAliasLevel.coerceIn(0, 3)
+
+        val safeRibbon = ribbon.copy(
+            minWidthRatio = ribbon.minWidthRatio.coerceIn(0.01f, 1f),
+            taperStartPx = ribbon.taperStartPx.coerceAtLeast(0f),
+            taperEndPx = ribbon.taperEndPx.coerceAtLeast(0f),
+            miterLimit = ribbon.miterLimit.coerceIn(1f, 32f),
+            aaWidthPx = ribbon.aaWidthPx.coerceIn(0f, 16f),
+            minPointDistancePx = ribbon.minPointDistancePx.coerceIn(0.05f, 32f),
+        )
+        val safeWet = wet.copy(
+            wetness = wet.wetness.coerceIn(0f, 1f),
+            spread = wet.spread.coerceIn(0f, 1f),
+            bleed = wet.bleed.coerceIn(0f, 1f),
+        )
+
+        return copy(
+            baseRadiusPx = safeRadius,
+            opacity = safeOpacity,
+            flow = safeFlow,
+            spacing = safeSpacing,
+            pressureGamma = safeGamma,
+            minSizeRatio = safeMinSize,
+            velocityToSize = safeVelocityToSize,
+            velocityToOpacity = safeVelocityToOpacity,
+            tiltToSize = safeTiltToSize,
+            tiltToOpacity = safeTiltToOpacity,
+            tiltToRotation = safeTiltToRotation,
+            sizeJitter = safeSizeJitter,
+            opacityJitter = safeOpacityJitter,
+            rotationJitter = safeRotationJitter,
+            scatter = safeScatter,
+            grainScale = safeGrainScale,
+            textureDepth = safeTextureDepth,
+            textureContrast = safeTextureContrast,
+            antiAliasLevel = safeAa,
+            ribbon = safeRibbon,
+            wet = safeWet,
+        )
+    }
 }

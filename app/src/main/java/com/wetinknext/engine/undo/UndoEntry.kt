@@ -1,10 +1,11 @@
 package com.wetinknext.engine.undo
 
-/** One committed stroke, retaining exact states from before and after its merge. */
+/** One reversible history operation, retaining exact states from before and after its merge. */
 data class UndoEntry(
     val layerId: Long,
     val beforeTiles: List<TileSnapshot>,
     val afterTiles: List<TileSnapshot>,
+    val operation: UndoOperationType = UndoOperationType.TILE_EDIT,
     val tag: String = "stroke",
 ) {
     val memorySize: Int

@@ -17,24 +17,21 @@ class StrokeInputCapturer(private val camera: Camera, private val pool: InputBat
     var droppedBatches = 0L
         private set
 
+    /** Cancels the one pointer currently owned by the drawing pipeline. */
+    fun cancelActiveStroke(): Boolean {
+        if (activePointerId < 0) return false
+        activePointerId = -1
+        return enqueueEmpty(InputAction.CANCEL)
+    }
+
     fun onTouchEvent(event: MotionEvent): Boolean = when (event.actionMasked) {
         MotionEvent.ACTION_DOWN -> {
             activePointerId = event.getPointerId(0)
             enqueue(event, InputAction.DOWN, 0, false)
         }
-        MotionEvent.ACTION_POINTER_DOWN -> {
-            // Штрих уже идёт: второй палец / ладонь ОТМЕНЯЕТ текущий штрих.
-            if (activePointerId >= 0) {
-                onSecondaryPointerDown?.invoke()
-                activePointerId = -1
-                enqueueEmpty(InputAction.CANCEL)
-                true
-            } else {
-                val i = event.actionIndex
-                activePointerId = event.getPointerId(i)
-                enqueue(event, InputAction.DOWN, i, false)
-            }
-        }
+        // Multi-touch is owned by GestureRouter. Drawing input only receives
+        // the one-pointer draw path and explicit cancellation from that router.
+        MotionEvent.ACTION_POINTER_DOWN -> false
         MotionEvent.ACTION_MOVE -> {
             val i = event.findPointerIndex(activePointerId)
             i >= 0 && enqueue(event, InputAction.MOVE, i, true)

@@ -63,6 +63,27 @@ data class ViewTransform(
         )
     }
 
+    /** Applies one screen-space navigation update around a shared gesture anchor. */
+    fun applyGestureDelta(
+        panX: Float,
+        panY: Float,
+        anchorX: Float,
+        anchorY: Float,
+        zoomFactor: Float,
+        rotationDelta: Float,
+    ): ViewTransform {
+        val translated = copy(
+            translateX = translateX + panX,
+            translateY = translateY + panY,
+        )
+        val zoomed = translated.zoomAround(
+            anchorX = anchorX,
+            anchorY = anchorY,
+            newScale = scale * zoomFactor,
+        )
+        return zoomed.rotateAround(anchorX, anchorY, rotationDelta)
+    }
+
     /** Builds a column-major matrix for canvas to OpenGL clip coordinates. */
     fun buildCanvasToClip(viewWidth: Float, viewHeight: Float, out: FloatArray) {
         require(out.size >= 16)

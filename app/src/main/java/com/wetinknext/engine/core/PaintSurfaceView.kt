@@ -17,6 +17,7 @@ class PaintSurfaceView @JvmOverloads constructor(
 
     private val textureLoader = TextureLoader(context)
     private var grainGeneration = 0L
+    private var shapeGeneration = 0L
 
     var onTextureError: ((String, Throwable) -> Unit)? = null
 
@@ -30,10 +31,7 @@ class PaintSurfaceView @JvmOverloads constructor(
             post { onEditorStateChange?.invoke(state) }
             requestRender()
         }
-        engineRenderer.setOnSecondaryPointerDown {
-            engineRenderer.requestCancelFromInput()
-            requestRender()
-        }
+        engineRenderer.onInputRenderRequested = { requestRender() }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -83,6 +81,21 @@ class PaintSurfaceView @JvmOverloads constructor(
             engineRenderer.setLayerOpacity(id, opacity)
             requestRender()
         }
+
+    fun clearActiveLayer() = queueEvent {
+        engineRenderer.clearActiveLayer()
+        requestRender()
+    }
+
+    fun toggleCanvasMirror() = queueEvent {
+        engineRenderer.toggleCanvasMirror()
+        requestRender()
+    }
+
+    fun setCanvasBackdrop(backdropArgb: Int, gridArgb: Int) = queueEvent {
+        engineRenderer.setCanvasBackdrop(backdropArgb, gridArgb)
+        requestRender()
+    }
 
     fun setBrushSize(px: Float) = queueEvent { 
         engineRenderer.setBrushSize(px)
@@ -153,6 +166,33 @@ class PaintSurfaceView @JvmOverloads constructor(
         }
     }
 
+    fun loadShapeTexture(
+        path: String,
+        reverse: Boolean = false,
+        rgbToAlpha: Boolean = false,
+    ) {
+        val generation = ++shapeGeneration
+        textureLoader.loadAsync(
+            path = path,
+            onLoaded = { loaded ->
+                queueEvent {
+                    if (generation != shapeGeneration) return@queueEvent
+                    engineRenderer.applyLoadedShape(loaded, reverse, rgbToAlpha)
+                    requestRender()
+                }
+            },
+            onError = { error -> post { onTextureError?.invoke(path, error) } },
+        )
+    }
+
+    fun clearShapeTexture() {
+        shapeGeneration++
+        queueEvent {
+            engineRenderer.clearShapeTexture()
+            requestRender()
+        }
+    }
+
     override fun onPause() {
         engineRenderer.cancelActiveStroke()
         super.onPause()
@@ -160,12 +200,14 @@ class PaintSurfaceView @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         grainGeneration++
+        shapeGeneration++
         textureLoader.shutdown()
         
         // Очищаем listeners, чтобы избежать утечек или вызовов в пустоту
         onTextureError = null
         onEditorStateChange = null
         engineRenderer.onStateChange = null
+        engineRenderer.onInputRenderRequested = null
         engineRenderer.setOnSecondaryPointerDown { }
 
         // Пытаемся освободить GL-объекты, но не рассчитываем на 100% успех здесь

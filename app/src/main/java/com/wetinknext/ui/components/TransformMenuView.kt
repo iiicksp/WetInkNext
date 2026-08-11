@@ -61,7 +61,10 @@ fun TransformMenuView(
             border = panelBorder
         ) {
             Row(
-                modifier = Modifier.padding(4.dp),
+                modifier = Modifier
+                    .width(340.dp)
+                    .height(32.dp)
+                    .padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 TransformModeButton("Свободно", TransformModeUi.FREEFORM, currentMode, theme, actions::setMode)
@@ -126,7 +129,7 @@ fun TransformMenuView(
 }
 
 @Composable
-private fun TransformModeButton(
+private fun RowScope.TransformModeButton(
     label: String,
     mode: TransformModeUi,
     currentMode: TransformModeUi,
@@ -137,10 +140,11 @@ private fun TransformModeButton(
     val enabled = false // Transform engine not ready
     Box(
         modifier = Modifier
+            .weight(1f)
+            .fillMaxHeight()
             .clip(RoundedCornerShape(20.dp))
             .background(if (isSelected) theme.accent.copy(alpha = 0.4f) else Color.Transparent)
-            .clickable(enabled = enabled) { onClick(mode) }
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .clickable(enabled = enabled) { onClick(mode) },
         contentAlignment = Alignment.Center
     ) {
         Text(

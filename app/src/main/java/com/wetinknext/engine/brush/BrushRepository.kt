@@ -10,7 +10,9 @@ class BrushRepository(
         json.encodeToString(preset)
 
     fun decode(value: String): BrushPreset =
-        json.decodeFromString(value)
+        json.decodeFromString<BrushPreset>(value).let { preset ->
+            preset.copy(settings = preset.settings.resolved())
+        }
 
     companion object {
         val defaultJson = Json {

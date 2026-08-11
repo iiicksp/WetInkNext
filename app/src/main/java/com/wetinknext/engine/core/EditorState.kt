@@ -11,6 +11,14 @@ data class LayerUiModel(
     val canDelete: Boolean,
 )
 
+data class UndoDiagnostics(
+    val pendingJobs: Int = 0,
+    val staleResults: Int = 0,
+    val compressionFailures: Int = 0,
+    val restoreFailures: Int = 0,
+    val memoryBytes: Long = 0L,
+)
+
 data class EditorUiState(
     val layers: List<LayerUiModel>,
     val canUndo: Boolean,
@@ -19,6 +27,7 @@ data class EditorUiState(
     val brushOpacity: Float,
     val activeLayerId: Long,
     val ready: Boolean,
+    val undoDiagnostics: UndoDiagnostics = UndoDiagnostics(),
 ) {
     companion object {
         val empty = EditorUiState(

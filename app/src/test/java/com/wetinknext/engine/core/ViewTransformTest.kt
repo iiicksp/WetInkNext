@@ -23,4 +23,21 @@ class ViewTransformTest {
         assertEquals(before[0], after[0], 0.001f)
         assertEquals(before[1], after[1], 0.001f)
     }
+
+    @Test fun gestureDeltaKeepsTheAnchorStableWithoutPan() {
+        val initial = ViewTransform(translateX = 30f, translateY = -10f, scale = 1.4f, rotationRad = .2f)
+        val before = FloatArray(2)
+        val after = FloatArray(2)
+        initial.screenToCanvas(400f, 300f, before)
+        initial.applyGestureDelta(
+            panX = 0f,
+            panY = 0f,
+            anchorX = 400f,
+            anchorY = 300f,
+            zoomFactor = 1.8f,
+            rotationDelta = .3f,
+        ).screenToCanvas(400f, 300f, after)
+        assertEquals(before[0], after[0], .001f)
+        assertEquals(before[1], after[1], .001f)
+    }
 }

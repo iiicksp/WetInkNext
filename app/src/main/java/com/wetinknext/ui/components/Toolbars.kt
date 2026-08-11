@@ -49,6 +49,7 @@ fun TopToolbar(
     onTransformClick: () -> Unit,
     onAnimationClick: () -> Unit,
     onAdjustmentsClick: () -> Unit = {},
+    onSettingsClick: () -> Unit,
     onLayersClick: () -> Unit,
     onColorClick: () -> Unit,
 ) {
@@ -65,17 +66,67 @@ fun TopToolbar(
         ToolbarIcon(Icons.AutoMirrored.Filled.Undo, theme, isSelected = false, enabled = canUndo, onClick = onUndoClick)
         ToolbarIcon(Icons.AutoMirrored.Filled.Redo, theme, isSelected = false, enabled = canRedo, onClick = onRedoClick)
         
-        ToolbarIcon(Icons.Default.SelectAll, theme, isSelected = isSelectionActive, onClick = onSelectionClick)
+        // SelectAll has a visually denser glyph than Fullscreen; its 18 dp drawing size
+        // matches Transform's perceived 20 dp footprint while both buttons stay 34 dp.
+        ToolbarIcon(Icons.Default.SelectAll, theme, isSelected = isSelectionActive, iconSize = 18.dp, onClick = onSelectionClick)
         ToolbarIcon(Icons.Default.Movie, theme, isSelected = isAnimationActive, onClick = onAnimationClick)
         ToolbarIcon(Icons.Default.Fullscreen, theme, isSelected = isTransformActive, onClick = onTransformClick)
         ToolbarIcon(Icons.Default.Tune, theme, isSelected = isAdjustmentsActive, onClick = onAdjustmentsClick)
         ToolbarIcon(Icons.Default.Layers, theme, onClick = onLayersClick)
+        ToolbarIcon(Icons.Default.Settings, theme, contentDescription = "Настройки", onClick = onSettingsClick)
         
         ColorPickerDot(
             color = currentColor,
             theme = theme,
             onClick = onColorClick
         )
+    }
+}
+
+/** Compact actions placed directly under the left brush toolbar. */
+@Composable
+fun LeftCanvasActions(
+    theme: AppTheme,
+    onClearLayerClick: () -> Unit,
+    onMirrorClick: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.padding(start = 12.dp, top = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        CanvasActionButton(
+            icon = Icons.Default.DeleteSweep,
+            description = "Очистить активный слой",
+            theme = theme,
+            onClick = onClearLayerClick,
+        )
+        CanvasActionButton(
+            icon = Icons.Default.Flip,
+            description = "Зеркальный просмотр холста",
+            theme = theme,
+            onClick = onMirrorClick,
+        )
+    }
+}
+
+@Composable
+private fun CanvasActionButton(
+    icon: ImageVector,
+    description: String,
+    theme: AppTheme,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(theme.panelBg.copy(alpha = 0.9f))
+            .border(1.2.dp, theme.panelStroke, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = description, tint = theme.textPrimary, modifier = Modifier.size(20.dp))
     }
 }
 
@@ -220,6 +271,7 @@ private fun ToolbarIcon(
     isSelected: Boolean = false,
     enabled: Boolean = true,
     contentDescription: String? = null,
+    iconSize: androidx.compose.ui.unit.Dp = 20.dp,
     onClick: () -> Unit = {}
 ) {
     Box(
@@ -235,7 +287,7 @@ private fun ToolbarIcon(
             icon,
             contentDescription = contentDescription,
             tint = if (!enabled) theme.iconInactive.copy(alpha = 0.5f) else if (isSelected) theme.accent else theme.textPrimary,
-            modifier = Modifier.size(20.dp)
+            modifier = Modifier.size(iconSize)
         )
     }
 }

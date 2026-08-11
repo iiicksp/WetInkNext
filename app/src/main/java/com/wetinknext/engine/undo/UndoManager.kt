@@ -27,24 +27,50 @@ class UndoManager(
         trimToLimits()
     }
 
-    /** Moves the newest undo entry onto redo and returns it for a before-restore. */
-    fun popUndo(): UndoEntry? {
-        val entry = undoStack.removeLastOrNull() ?: return null
+    /** Returns the candidate without changing history; restore it before committing. */
+    fun peekUndo(): UndoEntry? = undoStack.lastOrNull()
+
+    /** Moves the exact current undo candidate to redo after a successful restore. */
+    fun commitUndo(entry: UndoEntry): Boolean {
+        if (undoStack.lastOrNull() !== entry) return false
+        undoStack.removeLast()
         undoMemoryBytes -= entry.memorySize
         redoStack.addLast(entry)
         redoMemoryBytes += entry.memorySize
         trimToLimits()
-        return entry
+        return true
     }
 
-    /** Moves the newest redo entry back to undo and returns it for an after-restore. */
-    fun popRedo(): UndoEntry? {
-        val entry = redoStack.removeLastOrNull() ?: return null
+    /** Discards a no-longer-restorable undo record without moving it to redo. */
+    fun dropUndo(entry: UndoEntry): Boolean {
+        if (undoStack.lastOrNull() !== entry) return false
+        undoStack.removeLast()
+        undoMemoryBytes -= entry.memorySize
+        entry.dispose()
+        return true
+    }
+
+    /** Returns the candidate without changing history; restore it before committing. */
+    fun peekRedo(): UndoEntry? = redoStack.lastOrNull()
+
+    /** Moves the exact current redo candidate to undo after a successful restore. */
+    fun commitRedo(entry: UndoEntry): Boolean {
+        if (redoStack.lastOrNull() !== entry) return false
+        redoStack.removeLast()
         redoMemoryBytes -= entry.memorySize
         undoStack.addLast(entry)
         undoMemoryBytes += entry.memorySize
         trimToLimits()
-        return entry
+        return true
+    }
+
+    /** Discards a no-longer-restorable redo record without moving it to undo. */
+    fun dropRedo(entry: UndoEntry): Boolean {
+        if (redoStack.lastOrNull() !== entry) return false
+        redoStack.removeLast()
+        redoMemoryBytes -= entry.memorySize
+        entry.dispose()
+        return true
     }
 
     fun clearRedo() {
@@ -60,6 +86,33 @@ class UndoManager(
         while (undoStack.isNotEmpty()) undoStack.removeLast().dispose()
         undoMemoryBytes = 0L
         clearRedo()
+    }
+
+    /** Removes history that can no longer be restored after deleting a layer. */
+    fun removeEntriesForLayer(layerId: Long) {
+        removeEntriesForLayer(undoStack, layerId) { entry -> undoMemoryBytes -= entry.memorySize }
+        removeEntriesForLayer(redoStack, layerId) { entry -> redoMemoryBytes -= entry.memorySize }
+        undoMemoryBytes = undoMemoryBytes.coerceAtLeast(0L)
+        redoMemoryBytes = redoMemoryBytes.coerceAtLeast(0L)
+    }
+
+    private fun removeEntriesForLayer(
+        stack: ArrayDeque<UndoEntry>,
+        layerId: Long,
+        subtractMemory: (UndoEntry) -> Unit,
+    ) {
+        if (stack.isEmpty()) return
+        val retained = ArrayDeque<UndoEntry>(stack.size)
+        while (stack.isNotEmpty()) {
+            val entry = stack.removeFirst()
+            if (entry.layerId == layerId) {
+                subtractMemory(entry)
+                entry.dispose()
+            } else {
+                retained.addLast(entry)
+            }
+        }
+        stack.addAll(retained)
     }
 
     private fun trimToLimits() {
