@@ -24,6 +24,7 @@ class DabRenderer(private val maxDabs: Int) {
     private var uTextureDepth = -1
     private var uTextureContrast = -1
     private var uStrokeOpacity = -1
+    private var uCoverageOnly = -1
     private var uShapeTex = -1
     private var uShapeActive = -1
     private var uReverseShape = -1
@@ -61,12 +62,13 @@ class DabRenderer(private val maxDabs: Int) {
         uTextureDepth = GLES30.glGetUniformLocation(currentProgram.id, "uTextureDepth")
         uTextureContrast = GLES30.glGetUniformLocation(currentProgram.id, "uTextureContrast")
         uStrokeOpacity = GLES30.glGetUniformLocation(currentProgram.id, "uStrokeOpacity")
+        uCoverageOnly = GLES30.glGetUniformLocation(currentProgram.id, "uCoverageOnly")
         uShapeTex = GLES30.glGetUniformLocation(currentProgram.id, "uShapeTex")
         uShapeActive = GLES30.glGetUniformLocation(currentProgram.id, "uShapeActive")
         uReverseShape = GLES30.glGetUniformLocation(currentProgram.id, "uReverseShape")
         uRgbToAlpha = GLES30.glGetUniformLocation(currentProgram.id, "uRgbToAlpha")
 
-        check(uCanvasToClip >= 0 && uColorLinear >= 0 && uStrokeOpacity >= 0) { "Dab shader uniforms missing" }
+        check(uCanvasToClip >= 0 && uColorLinear >= 0 && uStrokeOpacity >= 0 && uCoverageOnly >= 0) { "Dab shader uniforms missing" }
 
         val quad = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
         val quadData = ByteBuffer.allocateDirect(quad.size * Float.SIZE_BYTES)
@@ -137,6 +139,7 @@ class DabRenderer(private val maxDabs: Int) {
                 colorLinear = colorLinear,
                 blendPolicy = blendPolicy,
                 strokeOpacity = strokeOpacity,
+                coverageOnly = false,
             )
         } finally {
             dabs.finishUpload()
@@ -161,6 +164,7 @@ class DabRenderer(private val maxDabs: Int) {
         uCanvasToClip = -1
         uColorLinear = -1
         uStrokeOpacity = -1
+        uCoverageOnly = -1
     }
 
     fun beginStroke() {
@@ -206,6 +210,40 @@ class DabRenderer(private val maxDabs: Int) {
         rgbToAlpha = false
     }
 
+    /**
+     * Draws all dabs into a coverage target. The fragment coverage-only path
+     * is wired in the next NON_BUILDUP step; keeping upload ownership here
+     * prevents the mask pass from disturbing incremental colour preview data.
+     */
+    fun drawCoverageInto(
+        target: RenderTarget,
+        width: Int,
+        height: Int,
+        canvasToFbo: FloatArray,
+        dabs: DabBuffer,
+    ) {
+        if (dabs.count == 0) return
+
+        dabs.prepareForUpload(firstDab = 0, dabCount = dabs.count)
+        try {
+            drawRange(
+                target = target,
+                width = width,
+                height = height,
+                canvasToFbo = canvasToFbo,
+                dabs = dabs,
+                firstDab = 0,
+                count = dabs.count,
+                colorLinear = ZERO_COLOR,
+                blendPolicy = BlendPolicy.NON_BUILDUP,
+                strokeOpacity = 1f,
+                coverageOnly = true,
+            )
+        } finally {
+            dabs.finishUpload()
+        }
+    }
+
     fun drawPendingInto(
         target: RenderTarget,
         width: Int,
@@ -233,6 +271,7 @@ class DabRenderer(private val maxDabs: Int) {
                 colorLinear = colorLinear,
                 blendPolicy = blendPolicy,
                 strokeOpacity = strokeOpacity,
+                coverageOnly = false,
             )
             uploadedDabCount = dabs.count
         } finally {
@@ -251,14 +290,28 @@ class DabRenderer(private val maxDabs: Int) {
         colorLinear: FloatArray,
         blendPolicy: BlendPolicy,
         strokeOpacity: Float,
+        coverageOnly: Boolean,
     ) {
         val currentProgram = program ?: return
         target.bind()
         GLES30.glViewport(0, 0, width, height)
-        blendController.begin(blendPolicy)
+        if (coverageOnly) {
+            // A coverage mask is a union of dabs: overlaps retain their maximum
+            // alpha instead of source-over accumulating darkness.
+            GLES30.glEnable(GLES30.GL_BLEND)
+            GLES30.glBlendEquation(GLES30.GL_MAX)
+            GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE)
+        } else {
+            blendController.begin(blendPolicy)
+        }
         currentProgram.use()
         GLES30.glUniformMatrix4fv(uCanvasToClip, 1, false, canvasToFbo, 0)
         GLES30.glUniform3f(uColorLinear, colorLinear[0], colorLinear[1], colorLinear[2])
+
+        // The GLSL coverage output is added in the following NON_BUILDUP pass.
+        // Keep the explicit mode here so every draw call already has a stable API.
+        @Suppress("UNUSED_VARIABLE")
+        val coveragePass = coverageOnly
 
         GLES30.glUniform2f(uCanvasSize, width.toFloat(), height.toFloat())
         GLES30.glUniform1i(uGrainActive, if (grainTextureId != 0) 1 else 0)
@@ -267,6 +320,7 @@ class DabRenderer(private val maxDabs: Int) {
         GLES30.glUniform1f(uTextureDepth, textureDepth)
         GLES30.glUniform1f(uTextureContrast, textureContrast)
         GLES30.glUniform1f(uStrokeOpacity, strokeOpacity.coerceIn(0f, 1f))
+        GLES30.glUniform1i(uCoverageOnly, if (coverageOnly) 1 else 0)
         GLES30.glUniform1i(uShapeActive, if (shapeTextureId != 0) 1 else 0)
         GLES30.glUniform1i(uReverseShape, if (reverseShape) 1 else 0)
         GLES30.glUniform1i(uRgbToAlpha, if (rgbToAlpha) 1 else 0)
@@ -323,7 +377,17 @@ class DabRenderer(private val maxDabs: Int) {
 
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         GLES30.glBindVertexArray(0)
-        blendController.end()
+        if (coverageOnly) {
+            GLES30.glBlendEquation(GLES30.GL_FUNC_ADD)
+            GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+            GLES30.glDisable(GLES30.GL_BLEND)
+        } else {
+            blendController.end()
+        }
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+    }
+
+    private companion object {
+        val ZERO_COLOR = floatArrayOf(0f, 0f, 0f)
     }
 }

@@ -51,6 +51,8 @@ class CapsuleStrokeRenderer(
     private var grainCanvasLocked = true
     private var textureDepth = 1f
     private var textureContrast = 1f
+    // Reserved for a future oriented marker/chisel implementation.
+    private var strokeRotation = 0f
 
     private val checkGlErrors: Boolean
         get() = BuildConfig.DEBUG
@@ -267,6 +269,7 @@ class CapsuleStrokeRenderer(
     fun beginStroke() {
         segmentCount = 0
         uploadedSegmentCount = 0
+        strokeRotation = 0f
 
         instanceData.clear()
         instanceData.limit(
@@ -309,6 +312,47 @@ class CapsuleStrokeRenderer(
 
         segmentCount++
         return true
+    }
+
+    /**
+     * Retains pen orientation for a future non-round marker/chisel path.
+     * Round capsule geometry deliberately does not use the value yet.
+     */
+    fun setStrokeRotation(rotationRad: Float) {
+        strokeRotation = rotationRad
+    }
+
+    /**
+     * Applies geometric taper to all accumulated segments after the stroke is complete.
+     * The callback receives mesh arc-distance and the complete mesh length, so the end
+     * taper never depends on an estimate made during MOVE.
+     */
+    fun applyTaper(scaleAt: (distanceFromStart: Float, totalLength: Float) -> Float) {
+        if (segmentCount == 0) return
+
+        var totalLength = 0f
+        for (index in 0 until segmentCount) {
+            val offset = index * FLOATS_PER_SEGMENT
+            totalLength += kotlin.math.hypot(
+                instanceData.get(offset + 4) - instanceData.get(offset),
+                instanceData.get(offset + 5) - instanceData.get(offset + 1),
+            )
+        }
+
+        var distanceFromStart = 0f
+        for (index in 0 until segmentCount) {
+            val offset = index * FLOATS_PER_SEGMENT
+            val segmentLength = kotlin.math.hypot(
+                instanceData.get(offset + 4) - instanceData.get(offset),
+                instanceData.get(offset + 5) - instanceData.get(offset + 1),
+            )
+
+            val startScale = scaleAt(distanceFromStart, totalLength)
+            val endScale = scaleAt(distanceFromStart + segmentLength, totalLength)
+            instanceData.put(offset + 2, (instanceData.get(offset + 2) * startScale).coerceAtLeast(0.01f))
+            instanceData.put(offset + 6, (instanceData.get(offset + 6) * endScale).coerceAtLeast(0.01f))
+            distanceFromStart += segmentLength
+        }
     }
 
     /**

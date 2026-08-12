@@ -39,6 +39,10 @@ class CapsuleEmitter(
     private var lastY = 0f
     private var lastRadius = 0f
     private var lastCoverage = 1f
+    // Reserved for a future oriented tip; the round capsule deliberately ignores it.
+    private var lastOrientation = 0f
+    private var lastTiltX = 0f
+    private var lastTiltY = 0f
 
     // Окно точек для интерполяции P0, P1, P2, P3
     private var p0x = 0f; private var p0y = 0f; private var p0r = 0f
@@ -56,6 +60,9 @@ class CapsuleEmitter(
 
     var totalLength: Float = 0f
         private set
+
+    /** Physical input distance, retained for stroke diagnostics and future dynamics. */
+    private var strokeDistance = 0f
 
     var minX: Float = 0f
         private set
@@ -96,12 +103,16 @@ class CapsuleEmitter(
         lastY = 0f
         lastRadius = 0f
         lastCoverage = 1f
+        lastOrientation = 0f
+        lastTiltX = 0f
+        lastTiltY = 0f
 
         pointsInWindow = 0
 
         emittedSegments = 0
         hasStroke = false
         totalLength = 0f
+        strokeDistance = 0f
 
         minX = 0f
         minY = 0f
@@ -158,6 +169,10 @@ class CapsuleEmitter(
         lastY = y
         lastRadius = radius
         lastCoverage = coverage
+        lastOrientation = sample.orientationRad
+        lastTiltX = sample.tiltX
+        lastTiltY = sample.tiltY
+        out.setStrokeRotation(lastOrientation)
         hasLastPoint = true
         hasStroke = true
 
@@ -216,6 +231,10 @@ class CapsuleEmitter(
             BrushDynamics.resolve(settings, filteredPressure, sample.tiltX, sample.tiltY, resolvedDab)
             val radius = resolvedDab.radius
             val coverage = resolvedDab.coverage
+            lastOrientation = sample.orientationRad
+            lastTiltX = sample.tiltX
+            lastTiltY = sample.tiltY
+            out.setStrokeRotation(lastOrientation)
 
             emitPoint(
                 x = x,
@@ -258,6 +277,12 @@ class CapsuleEmitter(
             )
         }
 
+        // The end taper is only knowable after UP, when the complete mesh exists.
+        // Preview stays untapered; commit redraws every segment with these final radii.
+        out.applyTaper { distanceFromStart, meshLength ->
+            taperScale(distanceFromStart, meshLength, settings)
+        }
+
         active = false
         pointerId = -1
     }
@@ -273,6 +298,7 @@ class CapsuleEmitter(
         val dx = x - lastX
         val dy = y - lastY
         val distance = hypot(dx, dy)
+        strokeDistance += distance
 
         if (distance < minimumPointDistance()) {
             return
@@ -308,6 +334,31 @@ class CapsuleEmitter(
         lastY = y
         lastRadius = radius
         lastCoverage = coverage
+    }
+
+    private fun taperScale(
+        distanceFromStart: Float,
+        totalLength: Float,
+        settings: BrushSettings,
+    ): Float {
+        val start = settings.ribbon.taperStartPx
+        val end = settings.ribbon.taperEndPx
+
+        val startFactor = if (start <= 0f) {
+            1f
+        } else {
+            (distanceFromStart / start).coerceIn(0f, 1f)
+        }
+
+        val distanceToEnd = totalLength - distanceFromStart
+        val endFactor = if (end <= 0f) {
+            1f
+        } else {
+            (distanceToEnd / end).coerceIn(0f, 1f)
+        }
+
+        return minOf(startFactor, endFactor)
+            .coerceIn(settings.ribbon.minWidthRatio, 1f)
     }
 
     /**

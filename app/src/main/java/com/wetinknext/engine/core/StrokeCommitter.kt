@@ -2,6 +2,7 @@ package com.wetinknext.engine.core
 
 import android.opengl.GLES30
 import com.wetinknext.engine.canvas.PaintLayer
+import com.wetinknext.engine.canvas.NonBuildupStrokeRenderer
 import com.wetinknext.engine.canvas.StrokeBlitter
 import com.wetinknext.engine.gl.CanvasGeometry
 import com.wetinknext.engine.gl.GlCheck
@@ -69,6 +70,48 @@ class StrokeCommitter(
             afterRaw = afterRaw,
             operation = operation,
             tag = tag,
+        )
+        onTilesCommitted(layer, afterRaw)
+        return true
+    }
+
+    /** Commits a STAMP NON_BUILDUP stroke using its colour and union-coverage targets. */
+    fun commitNonBuildup(
+        layer: PaintLayer,
+        geometry: CanvasGeometry,
+        blitter: NonBuildupStrokeRenderer,
+        coverageTarget: RenderTarget,
+        dirtyBounds: IntArray,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        opacity: Float,
+    ): Boolean {
+        GlCheck.checkOnGlThread()
+        if (!layer.created || layer.isLocked || strokeTarget.textureId == 0 || coverageTarget.textureId == 0) return false
+        if (dirtyBounds.size < 4) return false
+
+        expandBoundsToTiles(dirtyBounds, canvasWidth, canvasHeight)
+        if (dirtyBounds[2] <= dirtyBounds[0] || dirtyBounds[3] <= dirtyBounds[1]) return false
+
+        val beforeRaw = TileSnapshotCapture.capture(layer.target, dirtyBounds)
+        blitter.blit(
+            layer = layer.target,
+            geometry = geometry,
+            colorTextureId = strokeTarget.textureId,
+            coverageTextureId = coverageTarget.textureId,
+            canvasToFbo = canvasToFbo,
+            width = canvasWidth,
+            height = canvasHeight,
+            opacity = opacity,
+        )
+        GLES30.glFlush()
+        layer.version++
+        val afterRaw = TileSnapshotCapture.capture(layer.target, dirtyBounds)
+        undoPipeline.enqueue(
+            undoManager = undoManager,
+            layerId = layer.id,
+            beforeRaw = beforeRaw,
+            afterRaw = afterRaw,
         )
         onTilesCommitted(layer, afterRaw)
         return true

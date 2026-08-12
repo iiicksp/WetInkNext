@@ -90,6 +90,7 @@ object ShaderLib {
         uniform float uTextureDepth;
         uniform float uTextureContrast;
         uniform float uStrokeOpacity;
+        uniform int uCoverageOnly;
         uniform sampler2D uShapeTex;
         uniform int uShapeActive;
         uniform int uReverseShape;
@@ -129,8 +130,32 @@ object ShaderLib {
                 );
             }
 
-            float a = vCoverage * vFlow * cov * shapeMask * grainFactor * uStrokeOpacity;
-            fragColor=vec4(uColorLinear*a,a);
+            float coverage = vCoverage * vFlow * cov * shapeMask * grainFactor;
+            if (uCoverageOnly == 1) {
+                fragColor = vec4(0.0, 0.0, 0.0, coverage);
+                return;
+            }
+            float a = coverage * uStrokeOpacity;
+            fragColor = vec4(uColorLinear * a, a);
+        }
+    """
+    const val nonBuildupStrokeFragment = """#version 300 es
+        precision highp float;
+
+        in vec2 vUv;
+        uniform sampler2D uColorTex;
+        uniform sampler2D uCoverageTex;
+        uniform float uOpacity;
+        out vec4 fragColor;
+
+        void main() {
+            vec4 color = texture(uColorTex, vUv);
+            float coverage = texture(uCoverageTex, vUv).a;
+            float alpha = coverage * uOpacity;
+            vec3 straightColor = color.a > 0.0001
+                ? color.rgb / color.a
+                : vec3(0.0);
+            fragColor = vec4(straightColor * alpha, alpha);
         }
     """
     const val strokeCompositeFragment = """#version 300 es
@@ -268,7 +293,14 @@ object ShaderLib {
                 grainFactor = mix(1.0 - uTextureDepth, 1.0, val);
             }
 
-            float segmentCoverage = mix(vA.w, vB.w, 0.5);
+            vec2 ab = vB.xy - vA.xy;
+            float abLengthSquared = max(dot(ab, ab), 0.000001);
+            float segmentT = clamp(
+                dot(vPos - vA.xy, ab) / abLengthSquared,
+                0.0,
+                1.0
+            );
+            float segmentCoverage = mix(vA.w, vB.w, segmentT);
             float finalAlpha = cov * segmentCoverage * grainFactor * uFlow;
             fragColor = vec4(uColorLinear * finalAlpha, finalAlpha);
         }

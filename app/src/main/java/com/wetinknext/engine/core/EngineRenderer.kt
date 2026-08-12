@@ -12,6 +12,7 @@ import com.wetinknext.engine.brush.BrushSettings
 import com.wetinknext.engine.brush.BrushTexture
 import com.wetinknext.engine.brush.LoadedBrushTexture
 import com.wetinknext.engine.brush.BrushRenderMode
+import com.wetinknext.engine.brush.BlendPolicy
 import com.wetinknext.engine.brush.CapsuleEmitter
 import com.wetinknext.engine.brush.CapsuleStrokeRenderer
 import com.wetinknext.engine.brush.ColorSpaces
@@ -23,6 +24,7 @@ import com.wetinknext.engine.canvas.LinearPresentRenderer
 import com.wetinknext.engine.canvas.LayerStack
 import com.wetinknext.engine.canvas.PaintLayer
 import com.wetinknext.engine.canvas.StrokeBlitter
+import com.wetinknext.engine.canvas.NonBuildupStrokeRenderer
 import com.wetinknext.engine.gl.CanvasGeometry
 import com.wetinknext.engine.gl.GlCaps
 import com.wetinknext.engine.gl.GlCheck
@@ -96,6 +98,8 @@ class EngineRenderer(
     private var shapeTexture: BrushTexture? = null
     private var shapePath: String? = null
     private val strokeTarget = RenderTarget()
+    /** RGBA8 coverage accumulator used by the NON_BUILDUP stroke path. */
+    private val strokeCoverageTarget = RenderTarget()
     /** Canvas-sized premultiplied linear composition, presented only once per frame. */
     private val compositeTarget = RenderTarget()
     private val canvasToFboMatrix = FloatArray(16)
@@ -188,6 +192,7 @@ class EngineRenderer(
     private var strokeActive = false
     private var activeStrokeBrush: BrushSettings? = null
     private var strokeBlitter: StrokeBlitter? = null
+    private var nonBuildupStrokeRenderer: NonBuildupStrokeRenderer? = null
     private var capsulePreviewInitialized = false
     private var stampPreviewInitialized = false
     private val cancelRequested = AtomicBoolean(false)
@@ -546,6 +551,12 @@ class EngineRenderer(
             nextCaps.supportsHalfFloatColorBuffer,
         )
         strokeTarget.clear(0f, 0f, 0f, 0f)
+        strokeCoverageTarget.create(
+            projectDocument.width,
+            projectDocument.height,
+            preferHalfFloat = false,
+        )
+        strokeCoverageTarget.clear(0f, 0f, 0f, 0f)
         compositeTarget.create(
             projectDocument.width,
             projectDocument.height,
@@ -567,6 +578,7 @@ class EngineRenderer(
             it.create()
         }
         strokeBlitter = StrokeBlitter().also { it.create() }
+        nonBuildupStrokeRenderer = NonBuildupStrokeRenderer().also { it.create() }
         // Build both the gallery preview and the individual layer previews
         // once the complete GPU session is available.
         captureThumbnail(layerStack.allLayers().map(PaintLayer::id))
@@ -729,6 +741,8 @@ class EngineRenderer(
         capsuleRenderer = null
         strokeBlitter?.release()
         strokeBlitter = null
+        nonBuildupStrokeRenderer?.release()
+        nonBuildupStrokeRenderer = null
         compositor?.release()
         compositor = null
         presentRenderer?.release()
@@ -739,6 +753,7 @@ class EngineRenderer(
         geometry?.release()
         geometry = null
         strokeTarget.release()
+        strokeCoverageTarget.release()
         compositeTarget.release()
         layerStack.release()
         caps = null
@@ -830,6 +845,43 @@ class EngineRenderer(
         val blitter = strokeBlitter ?: return
         val strokeGeometry = geometry ?: return
 
+        if (strokeBrush.blendPolicy == BlendPolicy.NON_BUILDUP) {
+            val renderer = dabRenderer ?: return
+            val nonBuildupBlitter = nonBuildupStrokeRenderer ?: return
+            strokeTarget.clear(0f, 0f, 0f, 0f)
+            strokeCoverageTarget.clear(0f, 0f, 0f, 0f)
+            renderer.drawInto(
+                target = strokeTarget,
+                width = layerStack.canvasWidth,
+                height = layerStack.canvasHeight,
+                canvasToFbo = canvasToFboMatrix,
+                dabs = dabBuffer,
+                colorLinear = activeStrokeColorLinear,
+                blendPolicy = BlendPolicy.NORMAL_BUILDUP,
+                strokeOpacity = 1f,
+            )
+            renderer.drawCoverageInto(
+                target = strokeCoverageTarget,
+                width = layerStack.canvasWidth,
+                height = layerStack.canvasHeight,
+                canvasToFbo = canvasToFboMatrix,
+                dabs = dabBuffer,
+            )
+            if (strokeCommitter.commitNonBuildup(
+                layer = layer,
+                geometry = strokeGeometry,
+                blitter = nonBuildupBlitter,
+                coverageTarget = strokeCoverageTarget,
+                dirtyBounds = dirtyBounds,
+                canvasWidth = layerStack.canvasWidth,
+                canvasHeight = layerStack.canvasHeight,
+                opacity = strokeBrush.opacity,
+            )) {
+                publishState()
+            }
+            return
+        }
+
         // Complete the isolated local-coverage mask before it is composited.
         // Global brush opacity is deliberately applied only by the blit.
         drawPendingStampPreview("UP")
@@ -900,6 +952,9 @@ class EngineRenderer(
         dabRenderer?.clearStrokeData()
         if (strokeTarget.framebufferId != 0) {
             strokeTarget.clear(0f, 0f, 0f, 0f)
+        }
+        if (strokeCoverageTarget.framebufferId != 0) {
+            strokeCoverageTarget.clear(0f, 0f, 0f, 0f)
         }
     }
 
