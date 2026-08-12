@@ -10,6 +10,7 @@ object ShaderLib {
         uniform sampler2D uLayerTex;
         uniform sampler2D uStrokeTex;
         uniform int uStrokeActive;
+        uniform int uStrokeErase;
         uniform float uOpacity;
         uniform float uStrokeOpacity;
 
@@ -22,7 +23,11 @@ object ShaderLib {
                 vec4 stroke = texture(uStrokeTex, vUv) * uStrokeOpacity;
 
                 // Both textures contain premultiplied linear RGBA.
-                layer = stroke + layer * (1.0 - stroke.a);
+                if (uStrokeErase == 1) {
+                    layer *= (1.0 - stroke.a);
+                } else {
+                    layer = stroke + layer * (1.0 - stroke.a);
+                }
             }
 
             float alpha = layer.a * uOpacity;

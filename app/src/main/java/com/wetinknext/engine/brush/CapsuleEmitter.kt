@@ -161,7 +161,7 @@ class CapsuleEmitter(
         val x = stabilizer.x
         val y = stabilizer.y
         val filteredPressure = pressureFilter.filter(sample.timestampNanos, sample.pressure)
-        BrushDynamics.resolve(resolvedSettings, filteredPressure, sample.tiltX, sample.tiltY, resolvedDab)
+        BrushDynamics.resolve(resolvedSettings, filteredPressure, sample.tiltX, sample.tiltY, 0f, sample.orientationRad, resolvedDab)
         val radius = resolvedDab.radius
         val coverage = resolvedDab.coverage
 
@@ -169,10 +169,10 @@ class CapsuleEmitter(
         lastY = y
         lastRadius = radius
         lastCoverage = coverage
-        lastOrientation = sample.orientationRad
+        lastOrientation = resolvedDab.rotation
         lastTiltX = sample.tiltX
         lastTiltY = sample.tiltY
-        out.setStrokeRotation(lastOrientation)
+        out.setStrokeRotation(resolvedDab.rotation)
         hasLastPoint = true
         hasStroke = true
 
@@ -228,13 +228,21 @@ class CapsuleEmitter(
             val x = stabilizer.x
             val y = stabilizer.y
             val filteredPressure = pressureFilter.filter(sample.timestampNanos, sample.pressure)
-            BrushDynamics.resolve(settings, filteredPressure, sample.tiltX, sample.tiltY, resolvedDab)
+            BrushDynamics.resolve(
+                settings,
+                filteredPressure,
+                sample.tiltX,
+                sample.tiltY,
+                stabilizer.velocity,
+                sample.orientationRad,
+                resolvedDab,
+            )
             val radius = resolvedDab.radius
             val coverage = resolvedDab.coverage
-            lastOrientation = sample.orientationRad
+            lastOrientation = resolvedDab.rotation
             lastTiltX = sample.tiltX
             lastTiltY = sample.tiltY
-            out.setStrokeRotation(lastOrientation)
+            out.setStrokeRotation(resolvedDab.rotation)
 
             emitPoint(
                 x = x,
@@ -360,6 +368,7 @@ class CapsuleEmitter(
         return minOf(startFactor, endFactor)
             .coerceIn(settings.ribbon.minWidthRatio, 1f)
     }
+
 
     /**
      * Адаптивная интерполяция сегмента P1-P2 с использованием P0 и P3 как контрольных точек.

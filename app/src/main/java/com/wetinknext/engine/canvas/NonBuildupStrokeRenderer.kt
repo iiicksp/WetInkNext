@@ -39,6 +39,7 @@ class NonBuildupStrokeRenderer {
         width: Int,
         height: Int,
         opacity: Float,
+        erase: Boolean = false,
     ) {
         val p = program ?: return
         if (colorTextureId == 0 || coverageTextureId == 0) return
@@ -47,7 +48,11 @@ class NonBuildupStrokeRenderer {
         GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendEquation(GLES30.GL_FUNC_ADD)
-        GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        if (erase) {
+            GLES30.glBlendFunc(GLES30.GL_ZERO, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        } else {
+            GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        }
         p.use()
         GLES30.glUniformMatrix4fv(uCanvasToClip, 1, false, canvasToFbo, 0)
         GLES30.glUniform2f(uCanvasSize, width.toFloat(), height.toFloat())
@@ -59,6 +64,7 @@ class NonBuildupStrokeRenderer {
         GLES30.glUniform1i(uCoverageTex, 1)
         GLES30.glUniform1f(uOpacity, opacity.coerceIn(0f, 1f))
         geometry.draw()
+        GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)

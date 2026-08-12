@@ -218,7 +218,10 @@ fun EditorScreen(
                     onBrushClick = { 
                         openPanel = if (openPanel == EditorPanel.BRUSH) EditorPanel.NONE else EditorPanel.BRUSH
                     },
-                    onEraserClick = { isEraser = it }
+                    onEraserClick = {
+                        isEraser = it
+                        surface.setEraserEnabled(it)
+                    }
                 )
                 LeftCanvasActions(
                     theme = theme,

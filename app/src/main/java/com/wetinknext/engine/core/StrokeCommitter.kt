@@ -40,6 +40,7 @@ class StrokeCommitter(
         canvasWidth: Int,
         canvasHeight: Int,
         opacity: Float,
+        erase: Boolean = false,
         operation: UndoOperationType = UndoOperationType.TILE_EDIT,
         tag: String = "stroke",
     ): Boolean {
@@ -59,6 +60,7 @@ class StrokeCommitter(
             width = canvasWidth,
             height = canvasHeight,
             opacity = opacity.coerceIn(0f, 1f),
+            erase = erase,
         )
         GLES30.glFlush()
         layer.version++
@@ -85,6 +87,7 @@ class StrokeCommitter(
         canvasWidth: Int,
         canvasHeight: Int,
         opacity: Float,
+        erase: Boolean = false,
     ): Boolean {
         GlCheck.checkOnGlThread()
         if (!layer.created || layer.isLocked || strokeTarget.textureId == 0 || coverageTarget.textureId == 0) return false
@@ -103,6 +106,7 @@ class StrokeCommitter(
             width = canvasWidth,
             height = canvasHeight,
             opacity = opacity,
+            erase = erase,
         )
         GLES30.glFlush()
         layer.version++

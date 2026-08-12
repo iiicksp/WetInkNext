@@ -190,6 +190,10 @@ class EngineRenderer(
     private val dirtyBounds = IntArray(4)
 
     private var strokeActive = false
+    /** Tool state, deliberately independent from the selected brush preset. */
+    private var eraserEnabled = false
+    /** Tool snapshot: toggling tools never changes an already-active stroke. */
+    private var activeStrokeErase = false
     private var activeStrokeBrush: BrushSettings? = null
     private var strokeBlitter: StrokeBlitter? = null
     private var nonBuildupStrokeRenderer: NonBuildupStrokeRenderer? = null
@@ -485,6 +489,10 @@ class EngineRenderer(
     fun setBrushOpacity(opacity: Float) =
         updateBrush(brushSettings.copy(opacity = opacity.coerceIn(0f, 1f)))
 
+    fun setEraserEnabled(enabled: Boolean) {
+        eraserEnabled = enabled
+    }
+
     fun setBrushColor(color: androidx.compose.ui.graphics.Color) =
         updateBrush(brushSettings.copy(colorArgb = color.toArgb().toLong() and 0xFFFFFFFFL))
 
@@ -631,6 +639,7 @@ class EngineRenderer(
                 strokeActive &&
                 (dabBuffer.count > 0 || (frameStrokeBrush?.renderMode == BrushRenderMode.RIBBON && capsuleEmitter.hasStroke))
             ) strokeTarget.textureId else 0,
+            strokeErase = activeStrokeErase,
             strokeOpacity = frameStrokeBrush?.opacity?.coerceIn(0f, 1f) ?: 1f,
             canvasToClip = canvasToFboMatrix,
         )
@@ -771,6 +780,7 @@ class EngineRenderer(
                             activeStrokeBrush = strokeBrush
                             ColorSpaces.srgb8ToLinear(strokeBrush.colorArgb, activeStrokeColorLinear)
                             activeStrokeColorLinear.copyInto(strokeColorLinear)
+                            activeStrokeErase = eraserEnabled
                             strokeActive = true
 
                             if (strokeBrush.renderMode == BrushRenderMode.RIBBON) {
@@ -876,6 +886,7 @@ class EngineRenderer(
                 canvasWidth = layerStack.canvasWidth,
                 canvasHeight = layerStack.canvasHeight,
                 opacity = strokeBrush.opacity,
+                erase = activeStrokeErase,
             )) {
                 publishState()
             }
@@ -894,6 +905,7 @@ class EngineRenderer(
             canvasWidth = layerStack.canvasWidth,
             canvasHeight = layerStack.canvasHeight,
             opacity = strokeBrush.opacity,
+            erase = activeStrokeErase,
         )) {
             publishState()
         }
@@ -942,6 +954,7 @@ class EngineRenderer(
 
     private fun resetStroke() {
         strokeActive = false
+        activeStrokeErase = false
         activeStrokeBrush = null
         stampEmitter.reset()
         dabBuffer.clear()
@@ -1318,6 +1331,7 @@ class EngineRenderer(
             canvasWidth = layerStack.canvasWidth,
             canvasHeight = layerStack.canvasHeight,
             opacity = strokeBrush.opacity,
+            erase = activeStrokeErase,
         )) {
             publishState()
         }

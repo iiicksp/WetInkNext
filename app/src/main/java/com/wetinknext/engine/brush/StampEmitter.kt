@@ -24,6 +24,8 @@ class StampEmitter(initialSettings: BrushSettings) {
     private var lastPressure = 0f
     private var lastTiltX = 0f
     private var lastTiltY = 0f
+    private var lastOrientationRad = 0f
+    private var lastVelocity = 0f
     private var carriedDistance = 0f
     private var movedDuringStroke = false
     private var pointCount = 0
@@ -45,6 +47,8 @@ class StampEmitter(initialSettings: BrushSettings) {
         movedDuringStroke = false
         pointCount = 0
         strokeSettings = null
+        lastOrientationRad = 0f
+        lastVelocity = 0f
         stabilizer.reset()
         pressureFilter.reset()
     }
@@ -68,6 +72,8 @@ class StampEmitter(initialSettings: BrushSettings) {
         lastPressure = pressureFilter.filter(s.timestampNanos, s.pressure)
         lastTiltX = s.tiltX
         lastTiltY = s.tiltY
+        lastOrientationRad = s.orientationRad
+        lastVelocity = 0f
         hasLast = true
         p0x = lastX; p0y = lastY; p0p = lastPressure
         p1x = lastX; p1y = lastY; p1p = lastPressure
@@ -84,9 +90,14 @@ class StampEmitter(initialSettings: BrushSettings) {
             if (s.pointerId == pointerId) {
                 stabilizer.process(s.timestampNanos, s.canvasX, s.canvasY)
                 val pressure = pressureFilter.filter(s.timestampNanos, s.pressure)
+                val velocity = stabilizer.velocity
+                lastOrientationRad = s.orientationRad
                 if (settings.smoothing <= .0001f) {
-                    addPoint(stabilizer.x, stabilizer.y, pressure, s.tiltX, s.tiltY, out)
+                    addPoint(stabilizer.x, stabilizer.y, pressure, s.tiltX, s.tiltY, velocity, s.orientationRad, out)
                 } else {
+                    lastVelocity = velocity
+                    lastTiltX = s.tiltX
+                    lastTiltY = s.tiltY
                     appendSmoothedPoint(stabilizer.x, stabilizer.y, pressure, out)
                 }
             }
@@ -110,6 +121,8 @@ class StampEmitter(initialSettings: BrushSettings) {
                 pressure = lastPressure,
                 tiltX = lastTiltX,
                 tiltY = lastTiltY,
+                velocity = lastVelocity,
+                orientationRad = lastOrientationRad,
                 out = out,
             )
         }
@@ -124,7 +137,7 @@ class StampEmitter(initialSettings: BrushSettings) {
         pointCount = (pointCount + 1).coerceAtMost(4)
 
         when (pointCount) {
-            2 -> addPoint(x, y, pressure, lastTiltX, lastTiltY, out)
+            2 -> addPoint(x, y, pressure, lastTiltX, lastTiltY, lastVelocity, lastOrientationRad, out)
             4 -> interpolateCatmullRom(out)
         }
     }
@@ -165,11 +178,11 @@ class StampEmitter(initialSettings: BrushSettings) {
                     (-p0y + 3f * p1y - 3f * p2y + p3y) * t3
                 )
             val pressure = p1p + (p2p - p1p) * t
-            addPoint(x, y, pressure, lastTiltX, lastTiltY, out)
+            addPoint(x, y, pressure, lastTiltX, lastTiltY, lastVelocity, lastOrientationRad, out)
         }
     }
 
-    private fun addPoint(x: Float, y: Float, p: Float, tx: Float, ty: Float, out: DabBuffer) {
+    private fun addPoint(x: Float, y: Float, p: Float, tx: Float, ty: Float, velocity: Float, orientationRad: Float, out: DabBuffer) {
         val settings = activeSettings()
         val dx = x - lastX
         val dy = y - lastY
@@ -189,6 +202,8 @@ class StampEmitter(initialSettings: BrushSettings) {
                 pressure = probePressure,
                 tiltX = probeTiltX,
                 tiltY = probeTiltY,
+                velocity = lastVelocity + (velocity - lastVelocity) * tProbe,
+                orientationRad = orientationRad,
                 out = resolvedDab,
             )
 
@@ -210,6 +225,8 @@ class StampEmitter(initialSettings: BrushSettings) {
                 pressure = lastPressure + (p - lastPressure) * t,
                 tiltX = lastTiltX + (tx - lastTiltX) * t,
                 tiltY = lastTiltY + (ty - lastTiltY) * t,
+                velocity = lastVelocity + (velocity - lastVelocity) * t,
+                orientationRad = orientationRad,
                 out = out,
             )
             carriedDistance = 0f
@@ -219,6 +236,8 @@ class StampEmitter(initialSettings: BrushSettings) {
         lastPressure = p
         lastTiltX = tx
         lastTiltY = ty
+        lastVelocity = velocity
+        lastOrientationRad = orientationRad
     }
 
     private fun spacingForRadius(radius: Float): Float {
@@ -233,6 +252,8 @@ class StampEmitter(initialSettings: BrushSettings) {
         pressure: Float,
         tiltX: Float,
         tiltY: Float,
+        velocity: Float,
+        orientationRad: Float,
         out: DabBuffer,
     ) {
         val settings = activeSettings()
@@ -241,15 +262,18 @@ class StampEmitter(initialSettings: BrushSettings) {
             pressure = pressure,
             tiltX = tiltX,
             tiltY = tiltY,
+            velocity = velocity,
+            orientationRad = orientationRad,
             out = resolvedDab,
         )
         out.add(
             x = x,
             y = y,
             radius = resolvedDab.radius,
-            rotation = 0f,
+            rotation = resolvedDab.rotation,
             coverage = resolvedDab.coverage,
             flow = settings.flow.coerceIn(0f, 1f),
         )
     }
+
 }

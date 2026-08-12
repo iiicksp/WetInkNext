@@ -181,6 +181,11 @@ class PaintSurfaceView @JvmOverloads constructor(
         requestRender()
     }
 
+    fun setEraserEnabled(enabled: Boolean) = queueEvent {
+        engineRenderer.setEraserEnabled(enabled)
+        requestRender()
+    }
+
     fun applyBrush(settings: BrushSettings) = queueEvent {
         engineRenderer.applyBrush(settings)
         requestRender()

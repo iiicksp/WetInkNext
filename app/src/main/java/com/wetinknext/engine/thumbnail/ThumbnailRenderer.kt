@@ -99,6 +99,7 @@ class ThumbnailRenderer {
                 layers = layers,
                 activeLayerId = NO_ACTIVE_LAYER,
                 strokeTextureId = 0,
+                strokeErase = false,
                 canvasToClip = canvasToClip,
                 strokeOpacity = 1f,
             )
