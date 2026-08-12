@@ -9,6 +9,8 @@ data class LayerUiModel(
     val opacity: Float,
     val active: Boolean,
     val canDelete: Boolean,
+    val thumbnailPath: String? = null,
+    val thumbnailVersion: Long = 0L,
 )
 
 data class UndoDiagnostics(

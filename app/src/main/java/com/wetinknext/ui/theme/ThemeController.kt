@@ -6,28 +6,34 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import com.wetinknext.engine.core.CanvasBackdropMode
 import kotlin.math.pow
 
 val LocalAppTheme = compositionLocalOf { AppThemes.Gray }
 
 data class CustomThemeColors(
     val appBackground: Int = 0xFF101826.toInt(),
+    val canvasBackground: Int = 0xFF101826.toInt(),
     val grid: Int = 0xFF38424C.toInt(),
     val panel: Int = 0xFF172033.toInt(),
     val accent: Int = 0xFF58A6FF.toInt(),
     val text: Int = 0xFFF4F7FB.toInt(),
+    val danger: Int = 0xFFFF4A5F.toInt(),
 )
 
 class ThemeController(
     initialThemeId: String = "gray",
     initialFontMode: String = "Classic",
-    initialCustomColors: CustomThemeColors = CustomThemeColors()
+    initialCustomColors: CustomThemeColors = CustomThemeColors(),
+    initialBackdropMode: String = CanvasBackdropMode.GRID.name,
 ) {
     var current by mutableStateOf(resolveTheme(initialThemeId, initialCustomColors))
         private set
     var font by mutableStateOf(if (initialFontMode == "Italic") UiFont.Italic else UiFont.Classic)
         private set
     var customColors by mutableStateOf(initialCustomColors)
+        private set
+    var backdropMode by mutableStateOf(runCatching { CanvasBackdropMode.valueOf(initialBackdropMode) }.getOrDefault(CanvasBackdropMode.GRID))
         private set
     val customTheme: AppTheme
         get() = createCustomTheme(customColors)
@@ -41,6 +47,7 @@ class ThemeController(
     }
     
     fun selectFont(f: UiFont) { font = f }
+    fun selectBackdropMode(mode: CanvasBackdropMode) { backdropMode = mode }
 
     fun updateCustomColors(newColors: CustomThemeColors) {
         customColors = newColors
@@ -67,12 +74,12 @@ class ThemeController(
             panelStroke = panel.mix(accent, 0.3f), 
             panelInset = panel.mix(if (isDark) Color.Black else Color.White, 0.2f),
             panelInsetSoft = panel.mix(accent, 0.1f),
-            canvasBackdrop = appBg, canvasGrid = grid,
+            canvasBackdrop = Color(colors.canvasBackground), canvasGrid = grid,
             textPrimary = text, textSecondary = text.copy(alpha = 0.6f),
             iconInactive = text.copy(alpha = 0.4f),
             accent = accent, accentSoft = accent.copy(alpha = 0.7f),
             accentMuted = accent.copy(alpha = 0.3f),
-            danger = Color(0xFFFF4A5F)
+            danger = Color(colors.danger)
         )
     }
 
@@ -93,15 +100,16 @@ class ThemeController(
 
     companion object {
         val Saver: Saver<ThemeController, *> = Saver(
-            save = { listOf(it.current.id, it.font.name, it.customColors.appBackground, it.customColors.grid, it.customColors.panel, it.customColors.accent, it.customColors.text) },
+            save = { listOf(it.current.id, it.font.name, it.backdropMode.name, it.customColors.appBackground, it.customColors.canvasBackground, it.customColors.grid, it.customColors.panel, it.customColors.accent, it.customColors.text, it.customColors.danger) },
             restore = { list ->
                 val l = list as List<*>
                 ThemeController(
                     initialThemeId = l[0] as String,
                     initialFontMode = l[1] as String,
-                    initialCustomColors = CustomThemeColors(
-                        l[2] as Int, l[3] as Int, l[4] as Int, l[5] as Int, l[6] as Int
-                    )
+                    initialBackdropMode = if (l.size >= 10) l[2] as String else CanvasBackdropMode.GRID.name,
+                    initialCustomColors = if (l.size >= 10) CustomThemeColors(l[3] as Int, l[4] as Int, l[5] as Int, l[6] as Int, l[7] as Int, l[8] as Int, l[9] as Int)
+                    else if (l.size >= 9) CustomThemeColors(l[2] as Int, l[3] as Int, l[4] as Int, l[5] as Int, l[6] as Int, l[7] as Int, l[8] as Int)
+                    else CustomThemeColors(l[2] as Int, l[2] as Int, l[3] as Int, l[4] as Int, l[5] as Int, l[6] as Int)
                 )
             }
         )
@@ -116,25 +124,31 @@ fun rememberThemeController(): ThemeController {
     val controller = rememberSaveable(saver = ThemeController.Saver) {
         val themeId = prefs.getString("theme_id", "gray") ?: "gray"
         val fontMode = prefs.getString("font_mode", "Classic") ?: "Classic"
+        val backdropMode = prefs.getString("backdrop_mode", CanvasBackdropMode.GRID.name) ?: CanvasBackdropMode.GRID.name
         val customColors = CustomThemeColors(
             appBackground = prefs.getInt("custom_bg", 0xFF101826.toInt()),
+            canvasBackground = prefs.getInt("custom_canvas_bg", prefs.getInt("custom_bg", 0xFF101826.toInt())),
             grid = prefs.getInt("custom_grid", 0xFF38424C.toInt()),
             panel = prefs.getInt("custom_panel", 0xFF172033.toInt()),
             accent = prefs.getInt("custom_accent", 0xFF58A6FF.toInt()),
-            text = prefs.getInt("custom_text", 0xFFF4F7FB.toInt())
+            text = prefs.getInt("custom_text", 0xFFF4F7FB.toInt()),
+            danger = prefs.getInt("custom_danger", 0xFFFF4A5F.toInt()),
         )
-        ThemeController(themeId, fontMode, customColors)
+        ThemeController(themeId, fontMode, customColors, backdropMode)
     }
 
-    LaunchedEffect(controller.current.id, controller.font, controller.customColors) {
+    LaunchedEffect(controller.current.id, controller.font, controller.customColors, controller.backdropMode) {
         prefs.edit()
             .putString("theme_id", controller.current.id)
             .putString("font_mode", controller.font.name)
+            .putString("backdrop_mode", controller.backdropMode.name)
             .putInt("custom_bg", controller.customColors.appBackground)
+            .putInt("custom_canvas_bg", controller.customColors.canvasBackground)
             .putInt("custom_grid", controller.customColors.grid)
             .putInt("custom_panel", controller.customColors.panel)
             .putInt("custom_accent", controller.customColors.accent)
             .putInt("custom_text", controller.customColors.text)
+            .putInt("custom_danger", controller.customColors.danger)
             .apply()
     }
 

@@ -20,6 +20,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.wetinknext.ui.theme.AppTheme
+import com.wetinknext.domain.document.ProjectDocument
 import kotlin.math.max
 
 private data class CanvasPreset(
@@ -39,7 +40,10 @@ private val QuickPresets = listOf(
 )
 
 private val DpiOptions = listOf(72, 144, 300, 350, 600, 1200)
-private val ColorProfiles = listOf("sRGB", "Display P3")
+private val ColorProfiles = listOf(
+    ProjectDocument.SRGB_PROFILE,
+    ProjectDocument.DISPLAY_P3_PROFILE,
+)
 
 @Composable
 fun NewCanvasDialog(
@@ -57,9 +61,10 @@ fun NewCanvasDialog(
     var customH by remember { mutableStateOf(defaultHeight.toString()) }
     var name by remember { mutableStateOf("Новый холст") }
     var dpi by remember { mutableIntStateOf(300) }
-    var colorProfile by remember { mutableStateOf("sRGB") }
+    var colorProfile by remember { mutableStateOf(ProjectDocument.SRGB_PROFILE) }
     var dpiExpanded by remember { mutableStateOf(false) }
     var profileExpanded by remember { mutableStateOf(false) }
+    var validationError by remember { mutableStateOf<String?>(null) }
     val isCustom = selected !in QuickPresets.indices
 
     AlertDialog(
@@ -173,6 +178,10 @@ fun NewCanvasDialog(
                         )
                     }
                 }
+                validationError?.let { message ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(message, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
             }
         },
         confirmButton = {
@@ -186,7 +195,12 @@ fun NewCanvasDialog(
                         val preset = QuickPresets[selected]
                         preset.width to preset.height
                     }
-                    onConfirm(name.trim().ifBlank { "Новый холст" }, w, h, dpi, colorProfile)
+                    validationError = runCatching {
+                        ProjectDocument.validateNewCanvas(w, h, dpi, colorProfile)
+                    }.exceptionOrNull()?.message
+                    if (validationError == null) {
+                        onConfirm(name.trim().ifBlank { "Новый холст" }, w, h, dpi, colorProfile)
+                    }
                 },
             ) {
                 Text("Создать", color = theme.accent, fontWeight = FontWeight.SemiBold)

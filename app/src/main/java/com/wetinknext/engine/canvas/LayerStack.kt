@@ -2,6 +2,7 @@ package com.wetinknext.engine.canvas
 
 import com.wetinknext.engine.core.Camera
 import com.wetinknext.engine.gl.GlCaps
+import com.wetinknext.domain.document.ProjectDocument
 
 /**
  * Render-thread-owned ordered collection of document layers.
@@ -28,6 +29,36 @@ class LayerStack {
     fun activeLayer(): PaintLayer? = findLayerById(activeLayerId)
 
     fun findLayerById(id: Long): PaintLayer? = layers.firstOrNull { it.id == id }
+
+    fun indexOfLayer(id: Long): Int = layers.indexOfFirst { it.id == id }
+
+    /** Creates the runtime stack from persisted layer metadata. */
+    fun create(caps: GlCaps, document: ProjectDocument) {
+        release()
+        canvasWidth = document.width
+        canvasHeight = document.height
+        documentUsesHalfFloat = caps.supportsHalfFloatColorBuffer
+
+        document.layers.forEachIndexed { index, source ->
+            val layer = PaintLayer(source.id, source.name).also {
+                it.isVisible = source.visible
+                it.isLocked = source.locked
+                it.opacity = source.opacity
+                it.blendMode = source.blendMode
+                it.version = source.thumbnailVersion
+                it.create(canvasWidth, canvasHeight, documentUsesHalfFloat)
+            }
+            // Tile restoration is a later persistence step. Preserve the new
+            // document's white background until a stored pixel payload is loaded.
+            if (index == 0 && source.locked) {
+                layer.target.clear(1f, 1f, 1f, 1f)
+            }
+            layers += layer
+        }
+
+        activeLayerId = document.activeLayerId ?: layers.last().id
+        nextId = (layers.maxOf { it.id } + 1L).coerceAtLeast(1L)
+    }
 
     /** Creates the locked opaque white background and one transparent drawing layer. */
     fun create(caps: GlCaps, width: Int, height: Int) {

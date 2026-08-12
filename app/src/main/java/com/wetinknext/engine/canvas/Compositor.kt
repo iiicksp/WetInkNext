@@ -4,6 +4,7 @@ import android.opengl.GLES30
 import com.wetinknext.engine.gl.CanvasGeometry
 import com.wetinknext.engine.gl.GlCheck
 import com.wetinknext.engine.gl.GlProgram
+import com.wetinknext.engine.gl.RenderTarget
 import com.wetinknext.engine.gl.ShaderLib
 
 /** Presents visible layers bottom-to-top, inserting the active preview at its layer position. */
@@ -40,6 +41,7 @@ class Compositor {
     }
 
     fun render(
+        destination: RenderTarget? = null,
         geometry: CanvasGeometry,
         layers: LayerStack,
         activeLayerId: Long,
@@ -48,6 +50,7 @@ class Compositor {
         strokeOpacity: Float,
     ) {
         val currentProgram = program ?: return
+        destination?.bind()
         currentProgram.use()
         GLES30.glUniformMatrix4fv(uCanvasToClip, 1, false, canvasToClip, 0)
         GLES30.glUniform2f(uCanvasSize, layers.canvasWidth.toFloat(), layers.canvasHeight.toFloat())
@@ -71,6 +74,44 @@ class Compositor {
             GLES30.glUniform1f(uStrokeOpacity, strokeOpacity.coerceIn(0f, 1f))
             geometry.draw()
         }
+
+        GLES30.glDisable(GLES30.GL_BLEND)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+    }
+
+    /**
+     * Draws one layer into the currently bound target.
+     *
+     * This is deliberately separate from [render]: a layer-preview needs the
+     * layer bitmap even when the layer is currently hidden in the project. Its
+     * opacity is still applied, while a blend mode has no second layer to blend
+     * against in this one-layer path.
+     */
+    fun renderLayer(
+        geometry: CanvasGeometry,
+        layer: PaintLayer,
+        canvasWidth: Int = layer.target.width,
+        canvasHeight: Int = layer.target.height,
+        canvasToClip: FloatArray,
+    ) {
+        if (!layer.created || canvasWidth <= 0 || canvasHeight <= 0) return
+        val currentProgram = program ?: return
+        currentProgram.use()
+        GLES30.glUniformMatrix4fv(uCanvasToClip, 1, false, canvasToClip, 0)
+        GLES30.glUniform2f(uCanvasSize, canvasWidth.toFloat(), canvasHeight.toFloat())
+        GLES30.glEnable(GLES30.GL_BLEND)
+        GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+
+        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, layer.target.textureId)
+        GLES30.glUniform1i(uLayerTex, 0)
+        GLES30.glUniform1i(uStrokeActive, 0)
+        GLES30.glUniform1f(uOpacity, layer.opacity.coerceIn(0f, 1f))
+        GLES30.glUniform1f(uStrokeOpacity, 1f)
+        geometry.draw()
 
         GLES30.glDisable(GLES30.GL_BLEND)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE1)

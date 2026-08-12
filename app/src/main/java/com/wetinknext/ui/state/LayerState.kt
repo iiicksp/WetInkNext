@@ -9,11 +9,15 @@ class LayerItem(
     visible: Boolean,
     opacity: Float,
     locked: Boolean,
+    thumbnailPath: String? = null,
+    thumbnailVersion: Long = 0L,
 ) {
     var name by mutableStateOf(name)
     var visible by mutableStateOf(visible)
     var opacity by mutableFloatStateOf(opacity)
     var locked by mutableStateOf(locked)
+    var thumbnailPath by mutableStateOf(thumbnailPath)
+    var thumbnailVersion by mutableLongStateOf(thumbnailVersion)
 }
 
 class LayerState {
@@ -36,6 +40,8 @@ class LayerState {
                         visible = model.isVisible,
                         opacity = model.opacity,
                         locked = model.isLocked,
+                        thumbnailPath = model.thumbnailPath,
+                        thumbnailVersion = model.thumbnailVersion,
                     ),
                 )
             } else {
@@ -43,6 +49,8 @@ class LayerState {
                 item.visible = model.isVisible
                 item.opacity = model.opacity
                 item.locked = model.isLocked
+                item.thumbnailPath = model.thumbnailPath
+                item.thumbnailVersion = model.thumbnailVersion
                 
                 // If the item needs to be moved to match the index in state
                 val currentIndex = layers.indexOf(item)

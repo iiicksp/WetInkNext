@@ -3,9 +3,15 @@ package com.wetinknext.app
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.Icon
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -14,11 +20,14 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalContext
+import com.wetinknext.domain.document.ProjectDocument
 import com.wetinknext.engine.brush.BrushPreset
 import com.wetinknext.engine.brush.BrushLibrary
 import com.wetinknext.engine.core.EditorUiState
+import com.wetinknext.engine.core.CanvasBackdropMode
 import com.wetinknext.engine.core.PaintSurfaceView
 import com.wetinknext.ui.animation.AnimationTimelineToolbar
 import com.wetinknext.ui.color.ColorPanel
@@ -28,6 +37,7 @@ import com.wetinknext.ui.state.LayerState
 import com.wetinknext.ui.theme.WetInkTheme
 import com.wetinknext.ui.theme.AppTheme
 import com.wetinknext.ui.theme.AppThemes
+import com.wetinknext.ui.theme.CustomThemeEditor
 import com.wetinknext.ui.theme.ThemeController
 import com.wetinknext.ui.theme.rememberThemeController
 
@@ -45,6 +55,15 @@ private enum class EditorPanel {
 
 @Composable
 fun EditorScreen(
+    projectId: String,
+    document: ProjectDocument,
+    layerTiles: Map<Long, ByteArray> = emptyMap(),
+    layerPreviews: Map<Long, ByteArray> = emptyMap(),
+    saveStatus: String = "Сохранено",
+    onDocumentChanged: (ProjectDocument) -> Unit = {},
+    onDirtyLayerTiles: (ProjectDocument, Map<Long, ByteArray>, Map<Long, Set<com.wetinknext.engine.undo.TileCoord>>, () -> Unit) -> Unit = { _, _, _, _ -> },
+    onThumbnailCaptured: (com.wetinknext.engine.core.ThumbnailCapture.Rgba) -> Unit = {},
+    onThumbnailBuildSaved: (com.wetinknext.engine.thumbnail.ThumbnailBuildResult) -> Unit = {},
     onBack: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -53,6 +72,7 @@ fun EditorScreen(
     var uiState by remember { mutableStateOf(EditorUiState.empty) }
     var openPanel by remember { mutableStateOf(EditorPanel.NONE) }
     var isEraser by remember { mutableStateOf(false) }
+    var documentLoading by remember(projectId) { mutableStateOf(true) }
     
     val colorState = remember { GlesColorState(context) }
     var brushColor by remember { mutableStateOf(Color.Black) }
@@ -60,9 +80,34 @@ fun EditorScreen(
 
     val layerState = remember { LayerState() }
 
-    val surface = remember {
-        PaintSurfaceView(context).also { view ->
+    val surface = remember(projectId, document.id) {
+        PaintSurfaceView(
+            context = context,
+            document = document,
+            layerTiles = layerTiles,
+            layerPreviews = layerPreviews,
+        ).also { view ->
             view.onEditorStateChange = { uiState = it }
+            view.onProjectDocumentChange = onDocumentChanged
+            view.onDirtyLayerTiles = { changed, payloads, dirty -> onDirtyLayerTiles(changed, payloads, dirty) { view.acknowledgeSavedTiles(dirty) } }
+            view.onThumbnailCaptured = onThumbnailCaptured
+            view.onThumbnailBuildSaved = onThumbnailBuildSaved
+            view.onDocumentSessionLoaded = { documentLoading = false }
+        }
+    }
+
+    DisposableEffect(surface, onDocumentChanged) {
+        surface.onProjectDocumentChange = onDocumentChanged
+        surface.onDirtyLayerTiles = { changed, payloads, dirty -> onDirtyLayerTiles(changed, payloads, dirty) { surface.acknowledgeSavedTiles(dirty) } }
+        surface.onThumbnailCaptured = onThumbnailCaptured
+        surface.onThumbnailBuildSaved = onThumbnailBuildSaved
+        surface.onDocumentSessionLoaded = { documentLoading = false }
+        onDispose {
+            surface.onProjectDocumentChange = null
+            surface.onDirtyLayerTiles = null
+            surface.onThumbnailCaptured = null
+            surface.onThumbnailBuildSaved = null
+            surface.onDocumentSessionLoaded = null
         }
     }
 
@@ -77,8 +122,8 @@ fun EditorScreen(
         selectedBrush = BrushLibrary.pencil6B
     }
 
-    LaunchedEffect(theme.id) {
-        surface.setCanvasBackdrop(theme.canvasBackdrop.toArgb(), theme.canvasGrid.toArgb())
+    LaunchedEffect(theme.canvasBackdrop, theme.canvasGrid, themeController.backdropMode) {
+        surface.setCanvasBackdrop(theme.canvasBackdrop.toArgb(), theme.canvasGrid.toArgb(), themeController.backdropMode)
     }
 
     WetInkTheme(theme = theme, fontMode = themeController.font) {
@@ -91,6 +136,30 @@ fun EditorScreen(
                 modifier = Modifier.fillMaxSize(),
                 factory = { surface },
             )
+
+            if (documentLoading) {
+                Box(
+                    modifier = Modifier.fillMaxSize().background(theme.appBg.copy(alpha = .92f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    androidx.compose.material3.Text("Загрузка документа…", color = theme.textPrimary)
+                }
+            }
+
+            // Save status remains in state for diagnostics; it must not overlap the canvas.
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(12.dp),
+            ) {
+                CanvasActionButton(
+                    icon = Icons.AutoMirrored.Filled.ArrowBack,
+                    description = "На главную",
+                    theme = theme,
+                    onClick = onBack,
+                )
+            }
 
             // Top Toolbar
             Box(
@@ -234,6 +303,7 @@ private fun EditorPanelHost(
                         onSelectLayer = { surface?.setActiveLayer(it) },
                         onVisibleChange = { id, visible -> surface?.setLayerVisible(id, visible) },
                         onOpacityChange = { id, opacity -> surface?.setLayerOpacity(id, opacity) },
+                        onDuplicateLayer = { id -> surface?.duplicateLayer(id) },
                         onRemoveLayer = { id -> surface?.removeLayer(id) }
                     )
                 }
@@ -320,12 +390,15 @@ private fun ThemeSettingsPanel(
     onDismiss: () -> Unit,
 ) {
     var preferencesOpen by remember { mutableStateOf(false) }
+    var customThemeOpen by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .width(320.dp)
+            .heightIn(max = 620.dp)
             .clip(RoundedCornerShape(22.dp))
             .background(theme.panelBg)
-            .padding(16.dp),
+            .verticalScroll(rememberScrollState())
+            .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -355,18 +428,40 @@ private fun ThemeSettingsPanel(
                         .background(if (index == 0) theme.panelBgVariant else Color.Transparent)
                         .padding(vertical = 8.dp),
                     contentAlignment = Alignment.Center,
-                ) { androidx.compose.material3.Text(label, color = if (index == 0) theme.textPrimary else theme.textSecondary, style = androidx.compose.material3.MaterialTheme.typography.labelSmall) }
+                ) {
+                    androidx.compose.material3.Text(
+                        text = label,
+                        color = if (index == 0) theme.textPrimary else theme.textSecondary,
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                }
             }
         }
 
-        if (!preferencesOpen) {
+        if (customThemeOpen) {
+            CustomThemeEditor(
+                colors = themeController.customColors,
+                theme = theme,
+                backdropMode = themeController.backdropMode,
+                onChange = themeController::updateCustomColors,
+                onBackdropModeChange = themeController::selectBackdropMode,
+                onDismiss = { customThemeOpen = false },
+            )
+        } else if (!preferencesOpen) {
             androidx.compose.material3.Text(
                 text = "Предпочтения",
                 color = theme.textPrimary,
                 modifier = Modifier.fillMaxWidth().clickable { preferencesOpen = true }.padding(vertical = 14.dp, horizontal = 4.dp),
             )
         } else {
-            androidx.compose.material3.Text("Тема", color = theme.textSecondary, style = androidx.compose.material3.MaterialTheme.typography.labelMedium)
+            androidx.compose.material3.Text(
+                text = "Тема",
+                color = theme.textSecondary,
+                style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
+                modifier = Modifier.padding(start = 10.dp),
+            )
             val choices = AppThemes.all + themeController.customTheme.copy(id = "custom", displayName = "Своя")
             choices.chunked(5).forEach { row ->
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -375,7 +470,12 @@ private fun ThemeSettingsPanel(
                         Box(
                             modifier = Modifier.size(48.dp).clip(androidx.compose.foundation.shape.CircleShape)
                                 .background(if (selected) Color.White else Color.Transparent)
-                                .clickable { if (candidate.id == "custom") themeController.selectCustom() else themeController.select(candidate) }
+                                .clickable {
+                                    if (candidate.id == "custom") {
+                                        themeController.selectCustom()
+                                        customThemeOpen = true
+                                    } else themeController.select(candidate)
+                                }
                                 .padding(2.dp),
                             contentAlignment = Alignment.Center,
                         ) {
@@ -384,7 +484,14 @@ private fun ThemeSettingsPanel(
                                     .background(if (candidate.id == "custom") theme.panelBgVariant else candidate.appBg),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                if (candidate.id == "custom") androidx.compose.material3.Text("Своя", color = Color.White, style = androidx.compose.material3.MaterialTheme.typography.labelSmall)
+                                if (candidate.id == "custom") {
+                                    Icon(
+                                        imageVector = Icons.Filled.Settings,
+                                        contentDescription = "Настроить свою тему",
+                                        tint = theme.textPrimary,
+                                        modifier = Modifier.size(21.dp),
+                                    )
+                                }
                                 else Box(Modifier.size(24.dp).clip(androidx.compose.foundation.shape.CircleShape).background(candidate.accent))
                             }
                         }
@@ -392,7 +499,6 @@ private fun ThemeSettingsPanel(
                     repeat(5 - row.size) { Spacer(Modifier.size(48.dp)) }
                 }
             }
-            androidx.compose.material3.Text(themeController.current.displayName, color = theme.textPrimary)
         }
     }
 }

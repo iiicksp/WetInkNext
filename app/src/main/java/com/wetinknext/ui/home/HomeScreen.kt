@@ -14,6 +14,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material3.*
@@ -22,7 +23,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import android.graphics.BitmapFactory
+import android.util.LruCache
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -33,6 +37,8 @@ import com.wetinknext.ui.theme.AppTheme
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 // Minimal models for Home UI shell
 data class HomeProject(
@@ -41,12 +47,56 @@ data class HomeProject(
     val canvasWidth: Int,
     val canvasHeight: Int,
     val updatedAtMs: Long,
+    val thumbnailBytes: ByteArray? = null,
+    val thumbnailVersion: Long = 0L,
 )
 
 data class DeletedHomeProject(
     val project: HomeProject,
     val deletedAtMs: Long,
 )
+
+private data class ProjectThumbnailKey(
+    val projectId: String,
+    val version: Long,
+)
+
+/** Bytes are primed from ProjectSummary; decoded bitmaps survive grid row recycling. */
+private object ProjectThumbnailBitmapCache {
+    private val encoded = LruCache<ProjectThumbnailKey, ByteArray>(32)
+    private val decoded = LruCache<ProjectThumbnailKey, ImageBitmap>(32)
+
+    fun prime(key: ProjectThumbnailKey, bytes: ByteArray?) {
+        if (bytes != null) encoded.put(key, bytes)
+    }
+
+    fun bitmap(key: ProjectThumbnailKey): ImageBitmap? = decoded.get(key)
+
+    fun decode(key: ProjectThumbnailKey): ImageBitmap? {
+        decoded.get(key)?.let { return it }
+        val bytes = encoded.get(key) ?: return null
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            ?.asImageBitmap()
+            ?.also { decoded.put(key, it) }
+    }
+}
+
+@Composable
+private fun rememberProjectThumbnail(
+    projectId: String,
+    version: Long,
+): ImageBitmap? {
+    val key = remember(projectId, version) { ProjectThumbnailKey(projectId, version) }
+    // Preserve the old preview for this project until a newly saved WebP is decoded.
+    var bitmap by remember(projectId) { mutableStateOf(ProjectThumbnailBitmapCache.bitmap(key)) }
+
+    LaunchedEffect(key) {
+        withContext(Dispatchers.Default) {
+            ProjectThumbnailBitmapCache.decode(key)
+        }?.let { bitmap = it }
+    }
+    return bitmap
+}
 
 @Composable
 fun HomeScreen(
@@ -56,6 +106,7 @@ fun HomeScreen(
     onOpenProject: (HomeProject) -> Unit,
     onCreateProject: (name: String, width: Int, height: Int, dpi: Int, colorProfile: String) -> Unit,
     onRenameProject: (HomeProject, String) -> Unit,
+    onDuplicateProject: (HomeProject) -> Unit,
     onDeleteProject: (HomeProject) -> Unit,
     onRestoreProject: (DeletedHomeProject) -> Unit,
     onDeleteForever: (DeletedHomeProject) -> Unit,
@@ -90,6 +141,7 @@ fun HomeScreen(
                         theme = theme,
                         onOpen = { onOpenProject(project) },
                         onRename = { renaming = project },
+                        onDuplicate = { onDuplicateProject(project) },
                         onDelete = { deleting = project },
                     )
                 }
@@ -224,6 +276,7 @@ private fun ProjectTile(
     theme: AppTheme,
     onOpen: () -> Unit,
     onRename: () -> Unit,
+    onDuplicate: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -281,6 +334,14 @@ private fun ProjectTile(
                         },
                     )
                     DropdownMenuItem(
+                        text = { Text("Дублировать", color = theme.textPrimary) },
+                        leadingIcon = { Icon(Icons.Outlined.ContentCopy, null, tint = theme.textSecondary) },
+                        onClick = {
+                            menuExpanded = false
+                            onDuplicate()
+                        },
+                    )
+                    DropdownMenuItem(
                         text = { Text("Удалить", color = theme.danger) },
                         leadingIcon = { Icon(Icons.Outlined.Delete, null, tint = theme.danger) },
                         onClick = {
@@ -303,30 +364,40 @@ private fun ProjectPreview(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(1.15f)
+            .aspectRatio(
+                project.canvasWidth.toFloat() /
+                    project.canvasHeight.coerceAtLeast(1).toFloat(),
+            )
             .clip(RoundedCornerShape(6.dp))
             .background(theme.panelInset)
             .border(1.dp, theme.panelStroke, RoundedCornerShape(6.dp)),
         contentAlignment = Alignment.Center,
     ) {
-        val ratio = project.canvasWidth.toFloat() / project.canvasHeight.coerceAtLeast(1).toFloat()
-        val swatchModifier = if (ratio >= 1f) {
-            Modifier
-                .fillMaxWidth(0.74f)
-                .aspectRatio(ratio)
-        } else {
-            Modifier
-                .fillMaxWidth((0.54f * ratio).coerceIn(0.24f, 0.54f))
-                .aspectRatio(ratio)
-        }
-        
-        Box(
-            modifier = swatchModifier
-                .clip(RoundedCornerShape(4.dp))
-                .background(Color(0xFFFAFAFA))
-                .border(1.dp, theme.panelStroke, RoundedCornerShape(4.dp)),
+        ProjectThumbnailBitmapCache.prime(
+            key = ProjectThumbnailKey(project.id, project.thumbnailVersion),
+            bytes = project.thumbnailBytes,
         )
+        val preview = rememberProjectThumbnail(
+            projectId = project.id,
+            version = project.thumbnailVersion,
+        )
+        if (preview != null) {
+            Image(bitmap = preview, contentDescription = "Превью ${project.name}", modifier = Modifier.fillMaxSize())
+            return@Box
+        }
+        EmptyProjectPlaceholder(theme)
     }
+}
+
+@Composable
+private fun EmptyProjectPlaceholder(theme: AppTheme) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clip(RoundedCornerShape(4.dp))
+            .background(Color(0xFFFAFAFA))
+            .border(1.dp, theme.panelStroke, RoundedCornerShape(4.dp)),
+    )
 }
 
 @Composable

@@ -1,5 +1,6 @@
 package com.wetinknext.ui.components
 
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,7 +17,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -24,6 +28,10 @@ import androidx.compose.ui.unit.sp
 import com.wetinknext.ui.state.LayerItem
 import com.wetinknext.ui.state.LayerState
 import com.wetinknext.ui.theme.AppTheme
+import com.wetinknext.ui.thumbnail.LayerThumbnail
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 private val PANEL_WIDTH = 320.dp
@@ -38,6 +46,7 @@ fun LayersPanel(
     onSelectLayer: (Long) -> Unit,
     onVisibleChange: (Long, Boolean) -> Unit,
     onOpacityChange: (Long, Float) -> Unit,
+    onDuplicateLayer: (Long) -> Unit,
     onRemoveLayer: (Long) -> Unit,
 ) {
     PanelSurface(
@@ -89,6 +98,7 @@ fun LayersPanel(
                         onSelect = { onSelectLayer(layerItem.id) },
                         onVisibleChange = { onVisibleChange(layerItem.id, it) },
                         onOpacityChange = { onOpacityChange(layerItem.id, it) },
+                        onDuplicate = { onDuplicateLayer(layerItem.id) },
                         onDelete = { onRemoveLayer(layerItem.id) },
                         canDelete = state.layers.size > 1 && !layerItem.locked
                     )
@@ -106,6 +116,7 @@ private fun LayerRow(
     onSelect: () -> Unit,
     onVisibleChange: (Boolean) -> Unit,
     onOpacityChange: (Float) -> Unit,
+    onDuplicate: () -> Unit,
     onDelete: () -> Unit,
     canDelete: Boolean,
 ) {
@@ -139,6 +150,15 @@ private fun LayerRow(
             
             Spacer(Modifier.width(8.dp))
 
+            LayerThumbnail(
+                layerId = layer.id,
+                path = layer.thumbnailPath,
+                thumbnailVersion = layer.thumbnailVersion,
+                modifier = Modifier.height(36.dp),
+            )
+
+            Spacer(Modifier.width(8.dp))
+
             Text(
                 layer.name,
                 modifier = Modifier.weight(1f),
@@ -150,6 +170,13 @@ private fun LayerRow(
             )
 
             if (canDelete) {
+                HeaderIconButton(
+                    theme = theme,
+                    icon = Icons.Default.ContentCopy,
+                    description = "Дублировать слой",
+                    onClick = onDuplicate,
+                )
+                Spacer(Modifier.width(4.dp))
                 HeaderIconButton(
                     theme = theme,
                     icon = Icons.Default.Delete,
@@ -182,6 +209,52 @@ private fun LayerRow(
                     ),
                 )
             }
+        }
+    }
+}
+
+/** Small, non-blocking thumbnail loader for the persisted layer WebP preview. */
+@Composable
+private fun LegacyLayerThumbnail(
+    layer: LayerItem,
+    theme: AppTheme,
+    size: Dp = 38.dp,
+) {
+    var preview by remember(layer.thumbnailPath, layer.thumbnailVersion) {
+        mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null)
+    }
+    LaunchedEffect(layer.thumbnailPath, layer.thumbnailVersion) {
+        preview = withContext(Dispatchers.IO) {
+            layer.thumbnailPath
+                ?.let(::File)
+                ?.takeIf(File::isFile)
+                ?.let { BitmapFactory.decodeFile(it.absolutePath) }
+                ?.asImageBitmap()
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(RoundedCornerShape(7.dp))
+            .background(theme.panelInset)
+            .border(1.dp, theme.panelStroke, RoundedCornerShape(7.dp)),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (preview != null) {
+            androidx.compose.foundation.Image(
+                bitmap = checkNotNull(preview),
+                contentDescription = "Превью слоя ${layer.name}",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Fit,
+            )
+        } else {
+            Text(
+                text = layer.name.take(1).uppercase(),
+                color = theme.iconInactive,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+            )
         }
     }
 }

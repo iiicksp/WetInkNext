@@ -4,24 +4,59 @@ import android.content.Context
 import android.opengl.GLSurfaceView
 import android.util.AttributeSet
 import android.view.MotionEvent
+import com.wetinknext.domain.document.ProjectDocument
 import com.wetinknext.engine.brush.BrushSettings
 import com.wetinknext.engine.brush.TextureLoader
 import com.wetinknext.engine.brush.LoadedBrushTexture
+import com.wetinknext.engine.thumbnail.ThumbnailBuildResult
+import com.wetinknext.engine.thumbnail.ThumbnailPreviewFiles
+import java.io.File
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
 /** Thread boundary between Compose commands and the GL-owned paint engine. */
 class PaintSurfaceView @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
+    document: ProjectDocument = ProjectDocument.newUntitled(),
+    layerTiles: Map<Long, ByteArray> = emptyMap(),
+    layerPreviews: Map<Long, ByteArray> = emptyMap(),
 ) : GLSurfaceView(context, attrs) {
-    private val engineRenderer = EngineRenderer()
+    private val thumbnailOutputDirectory = File(context.cacheDir, "wetink-thumbnails/${document.id}")
+    private val engineRenderer = EngineRenderer(
+        projectDocument = document,
+        initialLayerTiles = layerTiles,
+        thumbnailOutputDirectory = thumbnailOutputDirectory,
+    )
 
     private val textureLoader = TextureLoader(context)
+    private val thumbnailRestoreExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var grainGeneration = 0L
     private var shapeGeneration = 0L
 
     var onTextureError: ((String, Throwable) -> Unit)? = null
 
     var onEditorStateChange: ((EditorUiState) -> Unit)? = null
+    var onProjectDocumentChange: ((ProjectDocument) -> Unit)? = null
+    private var documentSessionLoaded = false
+    var onDocumentSessionLoaded: (() -> Unit)? = null
+        set(value) {
+            field = value
+            if (documentSessionLoaded && value != null) post(value)
+        }
+    var onDirtyLayerTiles: ((ProjectDocument, Map<Long, ByteArray>, Map<Long, Set<com.wetinknext.engine.undo.TileCoord>>) -> Unit)? = null
+    private val pendingThumbnailCapture = LatestValueDelivery<ThumbnailCapture.Rgba>()
+    var onThumbnailCaptured: ((ThumbnailCapture.Rgba) -> Unit)? = null
+        set(value) {
+            field = value
+            if (value != null) {
+                // setRenderer() may initialize EGL before AndroidView's caller
+                // has installed its listener. Replay the latest capture then.
+                post(::dispatchPendingThumbnail)
+            }
+        }
+    /** File previews that were encoded on the worker and published to cache. */
+    var onThumbnailBuildSaved: ((ThumbnailBuildResult) -> Unit)? = null
 
     init {
         setEGLContextClientVersion(3)
@@ -31,7 +66,32 @@ class PaintSurfaceView @JvmOverloads constructor(
             post { onEditorStateChange?.invoke(state) }
             requestRender()
         }
+        engineRenderer.onProjectDocumentChange = { document ->
+            post { onProjectDocumentChange?.invoke(document) }
+        }
+        engineRenderer.onDocumentSessionLoaded = {
+            documentSessionLoaded = true
+            post { onDocumentSessionLoaded?.invoke() }
+        }
+        engineRenderer.onDirtyLayerTiles = { document, payloads, dirty -> post { onDirtyLayerTiles?.invoke(document, payloads, dirty) } }
+        engineRenderer.onThumbnailCaptured = { image ->
+            pendingThumbnailCapture.offer(image)
+            post(::dispatchPendingThumbnail)
+        }
+        engineRenderer.onThumbnailBuildSaved = { result ->
+            // The worker has published files, but document metadata and layer
+            // UI state remain GL-owned. Update those first, then notify the
+            // app-level persistence bridge on the main thread.
+            post {
+                queueEvent {
+                    engineRenderer.applyThumbnailBuild(result)
+                    requestRender()
+                    post { onThumbnailBuildSaved?.invoke(result) }
+                }
+            }
+        }
         engineRenderer.onInputRenderRequested = { requestRender() }
+        restoreStoredLayerPreviews(layerPreviews)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -55,6 +115,10 @@ class PaintSurfaceView @JvmOverloads constructor(
         requestRender()
     }
 
+    fun acknowledgeSavedTiles(saved: Map<Long, Set<com.wetinknext.engine.undo.TileCoord>>) = queueEvent {
+        engineRenderer.acknowledgeSavedTiles(saved)
+    }
+
     fun setActiveLayer(id: Long) = queueEvent { 
         engineRenderer.setActiveLayer(id)
         requestRender()
@@ -65,8 +129,18 @@ class PaintSurfaceView @JvmOverloads constructor(
         requestRender()
     }
 
+    fun duplicateLayer(id: Long) = queueEvent {
+        engineRenderer.duplicateLayer(id)
+        requestRender()
+    }
+
     fun removeLayer(id: Long) = queueEvent { 
         engineRenderer.removeLayer(id)
+        requestRender()
+    }
+
+    fun moveLayer(id: Long, delta: Int) = queueEvent {
+        engineRenderer.moveLayer(id, delta)
         requestRender()
     }
 
@@ -92,8 +166,8 @@ class PaintSurfaceView @JvmOverloads constructor(
         requestRender()
     }
 
-    fun setCanvasBackdrop(backdropArgb: Int, gridArgb: Int) = queueEvent {
-        engineRenderer.setCanvasBackdrop(backdropArgb, gridArgb)
+    fun setCanvasBackdrop(backdropArgb: Int, gridArgb: Int, mode: CanvasBackdropMode) = queueEvent {
+        engineRenderer.setCanvasBackdrop(backdropArgb, gridArgb, mode)
         requestRender()
     }
 
@@ -193,6 +267,30 @@ class PaintSurfaceView @JvmOverloads constructor(
         }
     }
 
+    private fun dispatchPendingThumbnail() {
+        pendingThumbnailCapture.dispatchTo(onThumbnailCaptured)
+    }
+
+    /** Restores persisted WebP bytes off the main and GL threads. */
+    private fun restoreStoredLayerPreviews(layerPreviews: Map<Long, ByteArray>) {
+        if (layerPreviews.isEmpty()) return
+        thumbnailRestoreExecutor.execute {
+            val files = runCatching {
+                ThumbnailPreviewFiles.restoreLayerPreviews(
+                    outputDirectory = thumbnailOutputDirectory,
+                    previews = layerPreviews,
+                )
+            }.getOrElse { error ->
+                post { onTextureError?.invoke("layer previews", error) }
+                return@execute
+            }
+            queueEvent {
+                engineRenderer.installRestoredLayerThumbnails(files)
+                requestRender()
+            }
+        }
+    }
+
     override fun onPause() {
         engineRenderer.cancelActiveStroke()
         super.onPause()
@@ -202,11 +300,23 @@ class PaintSurfaceView @JvmOverloads constructor(
         grainGeneration++
         shapeGeneration++
         textureLoader.shutdown()
+        thumbnailRestoreExecutor.shutdownNow()
         
         // Очищаем listeners, чтобы избежать утечек или вызовов в пустоту
         onTextureError = null
         onEditorStateChange = null
+        onProjectDocumentChange = null
+        onDocumentSessionLoaded = null
+        onDirtyLayerTiles = null
+        onThumbnailCaptured = null
+        onThumbnailBuildSaved = null
+        pendingThumbnailCapture.clear()
         engineRenderer.onStateChange = null
+        engineRenderer.onProjectDocumentChange = null
+        engineRenderer.onDocumentSessionLoaded = null
+        engineRenderer.onDirtyLayerTiles = null
+        engineRenderer.onThumbnailCaptured = null
+        engineRenderer.onThumbnailBuildSaved = null
         engineRenderer.onInputRenderRequested = null
         engineRenderer.setOnSecondaryPointerDown { }
 

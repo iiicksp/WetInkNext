@@ -56,10 +56,9 @@ fun SelectionToolbar(
             Row(
                 modifier = Modifier
                     .width(340.dp)
-                    .padding(4.dp)
                     .height(32.dp)
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(theme.panelInsetSoft),
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 val shapes = listOf(
@@ -74,13 +73,13 @@ fun SelectionToolbar(
                             .weight(1f)
                             .fillMaxHeight()
                             .clip(RoundedCornerShape(20.dp))
-                            .background(if (isSelected) theme.accent else Color.Transparent)
+                            .background(if (isSelected) theme.accent.copy(alpha = 0.4f) else Color.Transparent)
                             .clickable { onShapeChange(shape) },
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
                             text = label,
-                            color = if (isSelected) Color.White else theme.textPrimary,
+                            color = if (isSelected) Color.White.copy(alpha = 0.4f) else theme.textPrimary.copy(alpha = 0.4f),
                             fontSize = 13.sp,
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                             maxLines = 1,

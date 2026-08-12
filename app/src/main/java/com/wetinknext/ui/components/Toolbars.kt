@@ -111,7 +111,7 @@ fun LeftCanvasActions(
 }
 
 @Composable
-private fun CanvasActionButton(
+fun CanvasActionButton(
     icon: ImageVector,
     description: String,
     theme: AppTheme,

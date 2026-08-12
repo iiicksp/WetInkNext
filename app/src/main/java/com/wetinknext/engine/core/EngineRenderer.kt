@@ -6,6 +6,8 @@ import android.util.Log
 import android.view.MotionEvent
 import androidx.compose.ui.graphics.toArgb
 import com.wetinknext.BuildConfig
+import com.wetinknext.domain.document.LayerDocument
+import com.wetinknext.domain.document.ProjectDocument
 import com.wetinknext.engine.brush.BrushSettings
 import com.wetinknext.engine.brush.BrushTexture
 import com.wetinknext.engine.brush.LoadedBrushTexture
@@ -17,7 +19,9 @@ import com.wetinknext.engine.brush.DabBuffer
 import com.wetinknext.engine.brush.DabRenderer
 import com.wetinknext.engine.brush.StampEmitter
 import com.wetinknext.engine.canvas.Compositor
+import com.wetinknext.engine.canvas.LinearPresentRenderer
 import com.wetinknext.engine.canvas.LayerStack
+import com.wetinknext.engine.canvas.PaintLayer
 import com.wetinknext.engine.canvas.StrokeBlitter
 import com.wetinknext.engine.gl.CanvasGeometry
 import com.wetinknext.engine.gl.GlCaps
@@ -28,20 +32,15 @@ import com.wetinknext.engine.input.InputBatch
 import com.wetinknext.engine.input.InputBatchPool
 import com.wetinknext.engine.input.GestureRouter
 import com.wetinknext.engine.input.StrokeInputCapturer
-import com.wetinknext.engine.undo.DeflateTileCompressor
-import com.wetinknext.engine.undo.RawTileSnapshot
-import com.wetinknext.engine.undo.TileSnapshot
-import com.wetinknext.engine.undo.TileSnapshotCapture
+import com.wetinknext.engine.persistence.LayerTileStore
+import com.wetinknext.engine.thumbnail.ThumbnailBuildResult
+import com.wetinknext.engine.thumbnail.ThumbnailBuildScheduler
+import com.wetinknext.engine.thumbnail.ThumbnailRenderer
 import com.wetinknext.engine.undo.TileSnapshotRestore
-import com.wetinknext.engine.undo.UndoEntry
 import com.wetinknext.engine.undo.UndoManager
 import com.wetinknext.engine.undo.UndoOperationType
+import java.io.File
 import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.TimeUnit
-import java.util.HashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -51,29 +50,45 @@ import javax.microedition.khronos.opengles.GL10
  * UP snapshots and merges them into the selected PaintLayer atomically.
  */
 class EngineRenderer(
-    private val documentWidth: Int = DEFAULT_CANVAS_WIDTH,
-    private val documentHeight: Int = DEFAULT_CANVAS_HEIGHT,
+    private var projectDocument: ProjectDocument = ProjectDocument.newUntitled(),
+    private val initialLayerTiles: Map<Long, ByteArray> = emptyMap(),
+    private val thumbnailOutputDirectory: File? = null,
 ) : GLSurfaceView.Renderer {
     private var caps: GlCaps? = null
     private val layerStack = LayerStack()
     private val undoManager = UndoManager()
-    private var undoExecutor = Executors.newSingleThreadExecutor()
-    private val tileCompressor = DeflateTileCompressor()
-    private val pendingUndoResults = ConcurrentLinkedQueue<UndoJobResult>()
-    /** Sequence allocation and application happen only on the GL thread. */
-    private var nextUndoSequence = 0L
-    private var nextUndoSequenceToApply = 0L
-    private val completedUndoResults = HashMap<Long, UndoJobResult>()
-    /** Number of commits whose result has not yet been applied to the history. */
-    private var pendingUndoCount = 0
-    private var undoCompressionFailures = 0
-    private var undoStaleResults = 0
+    private val layerTileStore = LayerTileStore(initialLayerTiles)
+    private var documentSession: DocumentSession? = null
+    private val undoPipeline = UndoCompressionPipeline(
+        requestRender = { onInputRenderRequested?.invoke() },
+    )
     private var undoRestoreFailures = 0
-    private var historyEpoch = 0L
     private var glThread: Thread? = null
+    /**
+     * Preview files may finish decoding before GLSurfaceView calls
+     * [onSurfaceCreated]. Keep them as plain JVM data until the document's
+     * LayerStack has been created on the GL thread.
+     */
+    private var deferredRestoredLayerThumbnails: Map<Long, File> = emptyMap()
 
     private var geometry: CanvasGeometry? = null
     private var compositor: Compositor? = null
+    private var presentRenderer: LinearPresentRenderer? = null
+    private val thumbnailCapture = ThumbnailCapture()
+    private val layerThumbnailPaths = mutableMapOf<Long, String>()
+    /** Last layer version for which a WebP preview was successfully published. */
+    private val layerThumbnailVersions = mutableMapOf<Long, Long>()
+    private val thumbnailScheduler = thumbnailOutputDirectory?.let { outputDirectory ->
+        ThumbnailBuildScheduler(
+            outputDirectory = outputDirectory,
+            renderer = ThumbnailRenderer(),
+            requestGlFrame = { onInputRenderRequested?.invoke() },
+            onSaved = { result -> onThumbnailBuildSaved?.invoke(result) },
+            onFailure = { error ->
+                if (BuildConfig.DEBUG) Log.e(THUMBNAIL_TAG, "Thumbnail build failed", error)
+            },
+        )
+    }
     private var dabRenderer: DabRenderer? = null
     private var capsuleRenderer: CapsuleStrokeRenderer? = null
     private var grainTexture: BrushTexture? = null
@@ -81,7 +96,27 @@ class EngineRenderer(
     private var shapeTexture: BrushTexture? = null
     private var shapePath: String? = null
     private val strokeTarget = RenderTarget()
+    /** Canvas-sized premultiplied linear composition, presented only once per frame. */
+    private val compositeTarget = RenderTarget()
     private val canvasToFboMatrix = FloatArray(16)
+    private val strokeCommitter = StrokeCommitter(
+        strokeTarget = strokeTarget,
+        canvasToFbo = canvasToFboMatrix,
+        undoPipeline = undoPipeline,
+        undoManager = undoManager,
+        onTilesCommitted = { layer, tiles ->
+            layerTileStore.markDirty(layer.id, tiles)
+            documentSession?.markLayerDirty(layer.id)
+            publishDirtyTiles()
+            markLayerThumbnailDirty(layer.id)
+        },
+        onLayerCleared = { layer ->
+            layerTileStore.markLayerCleared(layer.id)
+            documentSession?.markLayerDirty(layer.id)
+            publishDirtyTiles()
+            markLayerThumbnailDirty(layer.id)
+        },
+    )
     private val canvasToClipMatrix = FloatArray(16)
 
     private var screenWidth = 1
@@ -160,6 +195,16 @@ class EngineRenderer(
     /** Assigned by PaintSurfaceView; invoked on the GL thread. */
     var onStateChange: ((EditorUiState) -> Unit)? = null
 
+    /** Metadata-only snapshot for persistence; invoked on the GL thread. */
+    var onProjectDocumentChange: ((ProjectDocument) -> Unit)? = null
+
+    /** Called only after document metadata and all stored layer payloads reached the GPU. */
+    var onDocumentSessionLoaded: (() -> Unit)? = null
+    var onDirtyLayerTiles: ((ProjectDocument, Map<Long, ByteArray>, Map<Long, Set<com.wetinknext.engine.undo.TileCoord>>) -> Unit)? = null
+    var onThumbnailCaptured: ((ThumbnailCapture.Rgba) -> Unit)? = null
+    /** Posted on the UI thread after the scheduler published the current previews. */
+    var onThumbnailBuildSaved: ((ThumbnailBuildResult) -> Unit)? = null
+
     /** Assigned by PaintSurfaceView; invoked from the UI touch thread. */
     var onInputRenderRequested: (() -> Unit)? = null
 
@@ -184,14 +229,17 @@ class EngineRenderer(
     }
 
     /** Applies theme colors to the area that surrounds the document. */
-    fun setCanvasBackdrop(backdropArgb: Int, gridArgb: Int) {
+    private var canvasBackdropMode = CanvasBackdropMode.GRID
+
+    fun setCanvasBackdrop(backdropArgb: Int, gridArgb: Int, mode: CanvasBackdropMode) {
         argbToRgb(backdropArgb, canvasBackdropColor)
         argbToRgb(gridArgb, canvasGridColor)
+        canvasBackdropMode = mode
     }
 
     /** These methods are called from GLSurfaceView.queueEvent by the UI layer. */
     fun undo() {
-        if (pendingUndoCount > 0) return
+        if (undoPipeline.pendingCount > 0) return
         resetStroke()
         while (true) {
             val entry = undoManager.peekUndo() ?: return
@@ -211,13 +259,15 @@ class EngineRenderer(
                 return
             }
             layer.version++
+            persistRestoredTiles(layer, entry.beforeTiles)
+            updateProjectDocument { it }
             publishState()
             return
         }
     }
 
     fun redo() {
-        if (pendingUndoCount > 0) return
+        if (undoPipeline.pendingCount > 0) return
         resetStroke()
         while (true) {
             val entry = undoManager.peekRedo() ?: return
@@ -226,7 +276,12 @@ class EngineRenderer(
                 undoManager.dropRedo(entry)
                 continue
             }
-            val restored = TileSnapshotRestore.restore(layer.target, entry.afterTiles)
+            val restored = if (entry.operation == UndoOperationType.CLEAR_LAYER) {
+                layer.clear()
+                true
+            } else {
+                TileSnapshotRestore.restore(layer.target, entry.afterTiles)
+            }
             if (!restored) {
                 undoRestoreFailures++
                 publishState()
@@ -237,6 +292,15 @@ class EngineRenderer(
                 return
             }
             layer.version++
+            if (entry.operation == UndoOperationType.CLEAR_LAYER) {
+                layerTileStore.markLayerCleared(layer.id)
+                documentSession?.markLayerDirty(layer.id)
+                publishDirtyTiles()
+                markLayerThumbnailDirty(layer.id)
+            } else {
+                persistRestoredTiles(layer, entry.afterTiles)
+            }
+            updateProjectDocument { it }
             publishState()
             return
         }
@@ -245,7 +309,10 @@ class EngineRenderer(
     fun setActiveLayer(id: Long): Boolean {
         resetStroke()
         return layerStack.setActive(id).also { changed ->
-            if (changed) publishState()
+            if (changed) {
+                updateProjectDocument { it.copy(activeLayerId = id) }
+                publishState()
+            }
         }
     }
 
@@ -253,7 +320,61 @@ class EngineRenderer(
 
     fun addLayer(name: String): Long {
         resetStroke()
-        return layerStack.addLayer(name).id.also { publishState() }
+        val layer = layerStack.addLayer(name)
+        updateProjectDocument { document ->
+            document.copy(
+                layers = document.layers + layerDocumentFrom(layer),
+                activeLayerId = layer.id,
+            )
+        }
+        captureThumbnail(listOf(layer.id))
+        publishState()
+        return layer.id
+    }
+
+    /** Creates an editable pixel-identical copy directly above [id]. */
+    fun duplicateLayer(id: Long): Long? {
+        checkOnGlThread()
+        resetStroke()
+        val source = layerStack.findLayerById(id) ?: return null
+        val sourceIndex = layerStack.indexOfLayer(id)
+        if (sourceIndex < 0 || !source.created) return null
+
+        val duplicate = layerStack.addLayer(
+            name = nextDuplicateLayerName(source.name),
+            insertAt = sourceIndex + 1,
+        ).also {
+            it.isVisible = source.isVisible
+            it.isLocked = false
+            it.opacity = source.opacity
+            it.blendMode = source.blendMode
+            it.version = source.version
+        }
+
+        // Same-sized RenderTargets have the same format, so a framebuffer
+        // blit preserves premultiplied pixels exactly without a CPU readback.
+        GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, source.target.framebufferId)
+        GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, duplicate.target.framebufferId)
+        GLES30.glBlitFramebuffer(
+            0, 0, layerStack.canvasWidth, layerStack.canvasHeight,
+            0, 0, layerStack.canvasWidth, layerStack.canvasHeight,
+            GLES30.GL_COLOR_BUFFER_BIT,
+            GLES30.GL_NEAREST,
+        )
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GlCheck.noError("Duplicate layer")
+
+        val raw = com.wetinknext.engine.undo.TileSnapshotCapture.capture(
+            target = duplicate.target,
+            bounds = intArrayOf(0, 0, layerStack.canvasWidth, layerStack.canvasHeight),
+        )
+        layerTileStore.markDirty(duplicate.id, raw)
+        documentSession?.markLayerDirty(duplicate.id)
+        updateProjectDocument { it.copy(activeLayerId = duplicate.id, layers = layerStack.allLayers().map(::layerDocumentFrom)) }
+        publishDirtyTiles()
+        captureThumbnail(listOf(duplicate.id))
+        publishState()
+        return duplicate.id
     }
 
     fun removeLayer(id: Long): Boolean {
@@ -263,21 +384,48 @@ class EngineRenderer(
         val removed = layerStack.removeLayer(id) != null
         if (removed) {
             undoManager.removeEntriesForLayer(id)
+            layerThumbnailPaths.remove(id)
+            layerThumbnailVersions.remove(id)
+            thumbnailScheduler?.removeLayer(id)
+            updateProjectDocument { document ->
+                document.copy(
+                    layers = document.layers.filterNot { it.id == id },
+                    activeLayerId = layerStack.activeLayerId,
+                )
+            }
+            captureThumbnail()
             publishState()
         }
         return removed
+    }
+
+    /** Moves one layer in the document order and rebuilds only the project preview. */
+    fun moveLayer(id: Long, delta: Int): Boolean {
+        checkOnGlThread()
+        resetStroke()
+        val moved = layerStack.moveLayer(id, delta)
+        if (moved) {
+            updateProjectDocument { it }
+            captureThumbnail()
+            publishState()
+        }
+        return moved
     }
 
     fun setLayerVisible(id: Long, visible: Boolean) {
         resetStroke()
         val layer = layerStack.findLayerById(id) ?: return
         layer.isVisible = visible
+        syncLayerDocument(layer)
+        captureThumbnail()
         publishState()
     }
 
     fun setLayerOpacity(id: Long, opacity: Float) {
         val layer = layerStack.findLayerById(id) ?: return
         layer.opacity = opacity.coerceIn(0f, 1f)
+        syncLayerDocument(layer)
+        captureThumbnail(listOf(layer.id))
         publishState()
     }
 
@@ -286,22 +434,16 @@ class EngineRenderer(
         checkOnGlThread()
         resetStroke()
         val layer = layerStack.activeLayer() ?: return false
-        if (layer.isLocked) return false
-
-        val bounds = fullCanvasBounds()
-        val beforeRaw = TileSnapshotCapture.capture(layer.target, bounds)
-        layer.clear()
-        layer.version++
-        val afterRaw = TileSnapshotCapture.capture(layer.target, bounds)
-        enqueueUndoCompression(
-            layerId = layer.id,
-            beforeRaw = beforeRaw,
-            afterRaw = afterRaw,
-            operation = UndoOperationType.CLEAR_LAYER,
-            tag = "clear_layer",
+        val cleared = strokeCommitter.clearLayer(
+            layer = layer,
+            canvasWidth = layerStack.canvasWidth,
+            canvasHeight = layerStack.canvasHeight,
         )
-        publishState()
-        return true
+        if (cleared) {
+            updateProjectDocument { it }
+            publishState()
+        }
+        return cleared
     }
 
     /** Mirrors only the camera view; document pixels and undo history stay unchanged. */
@@ -383,26 +525,52 @@ class EngineRenderer(
         glThread = currentThread
         GlCheck.setGlThread(currentThread)
         releaseGlObjects()
-        if (undoExecutor.isShutdown) {
-            undoExecutor = Executors.newSingleThreadExecutor()
-        }
+        undoPipeline.ensureRunning()
+        thumbnailScheduler?.ensureRunning()
         val nextCaps = GlCaps.query()
         caps = nextCaps
-        layerStack.create(nextCaps, documentWidth, documentHeight)
-        strokeTarget.create(documentWidth, documentHeight, nextCaps.supportsHalfFloatColorBuffer)
+        documentSession = DocumentSession(
+            document = projectDocument,
+            layerStack = layerStack,
+            undoManager = undoManager,
+            layerTiles = initialLayerTiles,
+        ).also { it.loadIntoGpu(nextCaps) }
+        if (deferredRestoredLayerThumbnails.isNotEmpty()) {
+            val previews = deferredRestoredLayerThumbnails
+            deferredRestoredLayerThumbnails = emptyMap()
+            installRestoredLayerThumbnails(previews)
+        }
+        strokeTarget.create(
+            projectDocument.width,
+            projectDocument.height,
+            nextCaps.supportsHalfFloatColorBuffer,
+        )
         strokeTarget.clear(0f, 0f, 0f, 0f)
+        compositeTarget.create(
+            projectDocument.width,
+            projectDocument.height,
+            nextCaps.supportsHalfFloatColorBuffer,
+        )
+        compositeTarget.clear(0f, 0f, 0f, 0f)
         ViewTransform.buildCanvasToFbo(
-            documentWidth.toFloat(),
-            documentHeight.toFloat(),
+            projectDocument.width.toFloat(),
+            projectDocument.height.toFloat(),
             canvasToFboMatrix,
         )
-        geometry = CanvasGeometry().also { it.create(documentWidth, documentHeight) }
+        geometry = CanvasGeometry().also {
+            it.create(projectDocument.width, projectDocument.height)
+        }
         compositor = Compositor().also { it.create() }
+        presentRenderer = LinearPresentRenderer().also { it.create() }
         dabRenderer = DabRenderer(dabBuffer.capacity).also { it.create() }
         capsuleRenderer = CapsuleStrokeRenderer().also {
             it.create()
         }
         strokeBlitter = StrokeBlitter().also { it.create() }
+        // Build both the gallery preview and the individual layer previews
+        // once the complete GPU session is available.
+        captureThumbnail(layerStack.allLayers().map(PaintLayer::id))
+        onDocumentSessionLoaded?.invoke()
         ColorSpaces.srgb8ToLinear(brushSettings.colorArgb, strokeColorLinear)
         publishState()
         GlCheck.noError("P6 surface creation")
@@ -422,7 +590,9 @@ class EngineRenderer(
         if (redoGestureRequested.compareAndSet(true, false)) redo()
         if (resetCameraGestureRequested.compareAndSet(true, false)) resetCamera()
         drainInput()
-        processPendingUndo()
+        if (undoPipeline.process(undoManager)) publishState()
+        thumbnailScheduler?.processCompleted()
+        thumbnailScheduler?.buildIfNeeded(layerStack)
 
         val frameStrokeBrush = activeStrokeBrush
         if (strokeActive && frameStrokeBrush?.renderMode == BrushRenderMode.RIBBON) {
@@ -431,48 +601,78 @@ class EngineRenderer(
             // No longer clearing and drawing everything here, handled incrementally in drainInput
         }
 
+        // All document layers and the active stroke preview blend in linear,
+        // premultiplied RGBA before the one sRGB conversion at presentation.
+        compositeTarget.clear(0f, 0f, 0f, 0f)
+        GLES30.glViewport(0, 0, layerStack.canvasWidth, layerStack.canvasHeight)
+        GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+        GLES30.glDisable(GLES30.GL_BLEND)
+        val currentGeometry = geometry ?: return
+        val currentCompositor = compositor ?: return
+        val currentPresentRenderer = presentRenderer ?: return
+        currentCompositor.render(
+            destination = compositeTarget,
+            geometry = currentGeometry,
+            layers = layerStack,
+            activeLayerId = layerStack.activeLayerId,
+            strokeTextureId = if (
+                strokeActive &&
+                (dabBuffer.count > 0 || (frameStrokeBrush?.renderMode == BrushRenderMode.RIBBON && capsuleEmitter.hasStroke))
+            ) strokeTarget.textureId else 0,
+            strokeOpacity = frameStrokeBrush?.opacity?.coerceIn(0f, 1f) ?: 1f,
+            canvasToClip = canvasToFboMatrix,
+        )
+
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GLES30.glViewport(0, 0, screenWidth, screenHeight)
         GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
         GLES30.glDisable(GLES30.GL_BLEND)
         GLES30.glClearColor(canvasBackdropColor[0], canvasBackdropColor[1], canvasBackdropColor[2], 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-        drawBackdropGrid()
-
+        drawBackdropPattern()
         layerStack.camera.snapshot().buildCanvasToClip(
             screenWidth.toFloat(),
             screenHeight.toFloat(),
             canvasToClipMatrix,
         )
-        compositor?.render(
-            geometry = geometry ?: return,
-            layers = layerStack,
-            activeLayerId = layerStack.activeLayerId,
-            strokeTextureId = if (
-                strokeActive &&
-                (
-                    dabBuffer.count > 0 ||
-                        (
-                            frameStrokeBrush?.renderMode == BrushRenderMode.RIBBON &&
-                                capsuleEmitter.hasStroke
-                            )
-                    )
-            ) {
-                strokeTarget.textureId
-            } else {
-                0
-            },
-            // Both render modes write their local flow into strokeTarget. The
-            // compositor therefore applies only the snapshot's global opacity.
-            strokeOpacity = frameStrokeBrush?.opacity?.coerceIn(0f, 1f) ?: 1f,
-            canvasToClip = canvasToClipMatrix,
+        // Explicitly restore the default framebuffer before the final sRGB pass.
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        currentPresentRenderer.render(
+            geometry = currentGeometry,
+            sourceTextureId = compositeTarget.textureId,
+            canvasToClipMatrix = canvasToClipMatrix,
+            canvasWidth = layerStack.canvasWidth,
+            canvasHeight = layerStack.canvasHeight,
+            viewportWidth = screenWidth,
+            viewportHeight = screenHeight,
         )
     }
 
-    private fun drawBackdropGrid() {
+    private fun drawBackdropPattern() {
+        if (canvasBackdropMode == CanvasBackdropMode.SOLID) return
         val cellPx = 28
         GLES30.glEnable(GLES30.GL_SCISSOR_TEST)
         GLES30.glClearColor(canvasGridColor[0], canvasGridColor[1], canvasGridColor[2], 1f)
+        if (canvasBackdropMode == CanvasBackdropMode.CHECKERBOARD) {
+            var row = 0
+            var y = 0
+            while (y < screenHeight) {
+                var column = row and 1
+                var x = 0
+                while (x < screenWidth) {
+                    if (column == 0) {
+                        GLES30.glScissor(x, y, cellPx, cellPx)
+                        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+                    }
+                    column = 1 - column
+                    x += cellPx
+                }
+                row++
+                y += cellPx
+            }
+            GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+            return
+        }
         var x = 0
         while (x < screenWidth) {
             GLES30.glScissor(x, 0, 1, screenHeight)
@@ -494,207 +694,14 @@ class EngineRenderer(
         out[2] = (argb and 0xFF) / 255f
     }
 
-    private fun processPendingUndo() {
-        checkOnGlThread()
-        var changed = false
-        while (true) {
-            val result = pendingUndoResults.poll() ?: break
-            if (result.sequence < nextUndoSequenceToApply) {
-                discardUndoResult(result)
-                pendingUndoCount = (pendingUndoCount - 1).coerceAtLeast(0)
-                changed = true
-            } else {
-                completedUndoResults.put(result.sequence, result)?.let(::disposeReadyResult)
-            }
-        }
-
-        while (true) {
-            val result = completedUndoResults.remove(nextUndoSequenceToApply) ?: break
-            applyUndoResult(result)
-            pendingUndoCount = (pendingUndoCount - 1).coerceAtLeast(0)
-            nextUndoSequenceToApply++
-            changed = true
-        }
-        if (changed) publishState()
-    }
-
-    private fun applyUndoResult(result: UndoJobResult) {
-        when (result) {
-            is UndoJobResult.Ready -> {
-                if (!isUndoResultCurrent(result.epoch, historyEpoch)) {
-                    result.entry.dispose()
-                    undoStaleResults++
-                } else {
-                    undoManager.push(result.entry)
-                }
-            }
-            is UndoJobResult.Failed -> {
-                undoCompressionFailures++
-                if (BuildConfig.DEBUG) Log.e("TileUndo", "Undo compression failed", result.error)
-            }
-        }
-    }
-
-    private fun discardUndoResult(result: UndoJobResult) {
-        if (result is UndoJobResult.Ready) result.entry.dispose()
-        undoStaleResults++
-    }
-
-    private fun disposeReadyResult(result: UndoJobResult) {
-        if (result is UndoJobResult.Ready) result.entry.dispose()
-    }
-
-    /**
-     * Schedules compression after a successful GL commit. Each invocation publishes one
-     * Ready or Failed result, including when the executor rejects the task.
-     */
-    private fun enqueueUndoCompression(
-        layerId: Long,
-        beforeRaw: List<RawTileSnapshot>,
-        afterRaw: List<RawTileSnapshot>,
-        operation: UndoOperationType = UndoOperationType.TILE_EDIT,
-        tag: String = "stroke",
-    ) {
-        checkOnGlThread()
-        val epoch = historyEpoch
-        val sequence = allocateUndoSequence()
-        pendingUndoCount++
-        publishState()
-        if (pendingUndoCount >= MAX_PENDING_UNDO_JOBS) {
-            compressUndoSynchronously(
-                epoch = epoch,
-                sequence = sequence,
-                layerId = layerId,
-                beforeRaw = beforeRaw,
-                afterRaw = afterRaw,
-                operation = operation,
-                tag = tag,
-            )
-            processPendingUndo()
-            return
-        }
-
-        submitUndoCompression(
-            epoch = epoch,
-            sequence = sequence,
-            layerId = layerId,
-            beforeRaw = beforeRaw,
-            afterRaw = afterRaw,
-            operation = operation,
-            tag = tag,
-        )
-    }
-
-    private fun allocateUndoSequence(): Long {
-        checkOnGlThread()
-        val sequence = nextUndoSequence
-        nextUndoSequence++
-        return sequence
-    }
-
-    private fun submitUndoCompression(
-        epoch: Long,
-        sequence: Long,
-        layerId: Long,
-        beforeRaw: List<RawTileSnapshot>,
-        afterRaw: List<RawTileSnapshot>,
-        operation: UndoOperationType,
-        tag: String,
-    ) {
-        try {
-            undoExecutor.execute {
-                val result = runCatching {
-            val beforeTiles = beforeRaw.map { it.compress(tileCompressor) }
-            val afterTiles = afterRaw.map { it.compress(tileCompressor) }
-            UndoJobResult.Ready(
-                epoch = epoch,
-                sequence = sequence,
-                entry = UndoEntry(
-                    layerId = layerId,
-                    beforeTiles = beforeTiles,
-                    afterTiles = afterTiles,
-                    operation = operation,
-                    tag = tag,
-                ),
-            )
-                }.getOrElse { error ->
-                    UndoJobResult.Failed(epoch = epoch, sequence = sequence, error = error)
-                }
-                pendingUndoResults.add(result)
-                onInputRenderRequested?.invoke()
-            }
-        } catch (error: RejectedExecutionException) {
-            pendingUndoResults.add(
-                UndoJobResult.Failed(epoch = epoch, sequence = sequence, error = error),
-            )
-            onInputRenderRequested?.invoke()
-        }
-    }
-
-    /** Emergency backpressure only: prevents raw tile snapshots from growing without limit. */
-    private fun compressUndoSynchronously(
-        epoch: Long,
-        sequence: Long,
-        layerId: Long,
-        beforeRaw: List<RawTileSnapshot>,
-        afterRaw: List<RawTileSnapshot>,
-        operation: UndoOperationType,
-        tag: String,
-    ) {
-        val result = try {
-            UndoJobResult.Ready(
-            epoch = epoch,
-            sequence = sequence,
-            entry = UndoEntry(
-                    layerId = layerId,
-                    beforeTiles = beforeRaw.map { it.compress(tileCompressor) },
-                    afterTiles = afterRaw.map { it.compress(tileCompressor) },
-                    operation = operation,
-                    tag = tag,
-                ),
-            )
-        } catch (error: Throwable) {
-            UndoJobResult.Failed(epoch = epoch, sequence = sequence, error = error)
-        }
-        pendingUndoResults.add(result)
-    }
-
-    private fun fullCanvasBounds(): IntArray = intArrayOf(
-        0,
-        0,
-        layerStack.canvasWidth,
-        layerStack.canvasHeight,
-    )
-
     /** Invalidates worker results created before a destructive document change. */
     private fun invalidatePendingUndoHistory() {
         checkOnGlThread()
-        historyEpoch++
-        nextUndoSequenceToApply = nextUndoSequence
-        clearCompletedUndoResults()
-    }
-
-    private fun clearCompletedUndoResults() {
-        completedUndoResults.values.forEach(::disposeReadyResult)
-        completedUndoResults.clear()
+        undoPipeline.invalidate()
     }
 
     private fun shutdownUndoExecutor() {
-        undoExecutor.shutdownNow()
-        try {
-            undoExecutor.awaitTermination(100, TimeUnit.MILLISECONDS)
-        } catch (error: InterruptedException) {
-            Thread.currentThread().interrupt()
-        }
-
-        while (true) {
-            val result = pendingUndoResults.poll() ?: break
-            disposeReadyResult(result)
-        }
-        clearCompletedUndoResults()
-        pendingUndoCount = 0
-        // Results from the disposed executor must never block the next GL context.
-        nextUndoSequenceToApply = nextUndoSequence
+        undoPipeline.shutdown()
     }
 
     /** Safe to call from the UI thread; cancellation is executed on the next GL frame. */
@@ -724,9 +731,15 @@ class EngineRenderer(
         strokeBlitter = null
         compositor?.release()
         compositor = null
+        presentRenderer?.release()
+        presentRenderer = null
+        thumbnailScheduler?.shutdown()
+        thumbnailCapture.release()
+        documentSession = null
         geometry?.release()
         geometry = null
         strokeTarget.release()
+        compositeTarget.release()
         layerStack.release()
         caps = null
     }
@@ -814,34 +827,24 @@ class EngineRenderer(
         val layer = layerStack.activeLayer() ?: return
         if (layer.isLocked || dabBuffer.count == 0) return
         if (!computeDirtyPixelBounds(dirtyBounds)) return
-        expandBoundsToTiles(dirtyBounds, layerStack.canvasWidth, layerStack.canvasHeight)
-        val renderer = dabRenderer ?: return
         val blitter = strokeBlitter ?: return
+        val strokeGeometry = geometry ?: return
 
         // Complete the isolated local-coverage mask before it is composited.
         // Global brush opacity is deliberately applied only by the blit.
         drawPendingStampPreview("UP")
 
-        // Both snapshots use the actual layer format (RGBA8 or RGBA16F).
-        val beforeTilesRaw = TileSnapshotCapture.capture(layer.target, dirtyBounds)
-        blitter.blit(
-            layer = layer.target,
-            geometry = checkNotNull(geometry),
-            strokeTextureId = strokeTarget.textureId,
-            canvasToFbo = canvasToFboMatrix,
-            width = layerStack.canvasWidth,
-            height = layerStack.canvasHeight,
-            opacity = strokeBrush.opacity.coerceIn(0f, 1f),
-        )
-        GLES30.glFlush()
-        layer.version++
-        val afterTilesRaw = TileSnapshotCapture.capture(layer.target, dirtyBounds)
-        
-        enqueueUndoCompression(
-            layerId = layer.id,
-            beforeRaw = beforeTilesRaw,
-            afterRaw = afterTilesRaw,
-        )
+        if (strokeCommitter.commit(
+            layer = layer,
+            geometry = strokeGeometry,
+            blitter = blitter,
+            dirtyBounds = dirtyBounds,
+            canvasWidth = layerStack.canvasWidth,
+            canvasHeight = layerStack.canvasHeight,
+            opacity = strokeBrush.opacity,
+        )) {
+            publishState()
+        }
     }
 
     /** Returns a clamped pixel region covering the exact emitted dabs and their AA fringe. */
@@ -855,23 +858,6 @@ class EngineRenderer(
         strokeDirtyRect.clamp(layerStack.canvasWidth.toFloat(), layerStack.canvasHeight.toFloat())
         strokeDirtyRect.toPixelBounds(out)
         return out[2] > out[0] && out[3] > out[1]
-    }
-
-    /** Uses a stable whole-tile set for the before/after snapshot transaction. */
-    private fun expandBoundsToTiles(
-        bounds: IntArray,
-        canvasWidth: Int,
-        canvasHeight: Int,
-    ) {
-        val tileSize = TileSnapshot.TILE_SIZE
-        bounds[0] = (bounds[0] / tileSize) * tileSize
-        bounds[1] = (bounds[1] / tileSize) * tileSize
-        bounds[2] = ((bounds[2] + tileSize - 1) / tileSize) * tileSize
-        bounds[3] = ((bounds[3] + tileSize - 1) / tileSize) * tileSize
-        bounds[0] = bounds[0].coerceIn(0, canvasWidth)
-        bounds[1] = bounds[1].coerceIn(0, canvasHeight)
-        bounds[2] = bounds[2].coerceIn(0, canvasWidth)
-        bounds[3] = bounds[3].coerceIn(0, canvasHeight)
     }
 
     private fun drawPendingStampPreview(phase: String) {
@@ -925,6 +911,161 @@ class EngineRenderer(
         }
     }
 
+    /**
+     * Builds the persisted metadata from the GL-owned runtime state. UI state
+     * is never treated as the document source of truth.
+     */
+    fun buildDocumentSnapshot(): ProjectDocument {
+        checkOnGlThread()
+        return projectDocument.copy(
+            updatedAt = System.currentTimeMillis(),
+            activeLayerId = layerStack.activeLayerId,
+            layers = layerStack.allLayers().map(::layerDocumentFrom),
+        )
+    }
+
+    private fun updateProjectDocument(
+        transform: (ProjectDocument) -> ProjectDocument,
+    ) {
+        projectDocument = transform(projectDocument)
+        projectDocument = buildDocumentSnapshot()
+        documentSession?.markProjectDirty()
+        onProjectDocumentChange?.invoke(projectDocument)
+    }
+
+    fun acknowledgeSavedTiles(saved: Map<Long, Set<com.wetinknext.engine.undo.TileCoord>>) {
+        layerTileStore.acknowledge(saved)
+        documentSession?.markSaved(saved.keys)
+    }
+
+    private fun publishDirtyTiles() {
+        val dirty = layerTileStore.takeDirty()
+        if (dirty.isEmpty()) return
+        projectDocument = buildDocumentSnapshot()
+        documentSession?.markProjectDirty()
+        onDirtyLayerTiles?.invoke(projectDocument, layerTileStore.payloadsForDirty(dirty), dirty)
+    }
+
+    /** Re-captures restored GPU tiles so Undo/Redo is persisted like a stroke. */
+    private fun persistRestoredTiles(
+        layer: PaintLayer,
+        tiles: List<com.wetinknext.engine.undo.TileSnapshot>,
+    ) {
+        if (tiles.isEmpty()) return
+        val left = tiles.minOf { it.pixelLeft }
+        val top = tiles.minOf { it.pixelTop }
+        val right = tiles.maxOf { it.pixelLeft + it.pixelWidth }
+        val bottom = tiles.maxOf { it.pixelTop + it.pixelHeight }
+        val raw = com.wetinknext.engine.undo.TileSnapshotCapture.capture(
+            target = layer.target,
+            bounds = intArrayOf(left, top, right, bottom),
+        )
+        layerTileStore.markDirty(layer.id, raw)
+        publishDirtyTiles()
+        markLayerThumbnailDirty(layer.id)
+    }
+
+    private fun captureThumbnail(dirtyLayerIds: Collection<Long> = emptyList()) {
+        if (caps == null || geometry == null || compositor == null) return
+        val scheduler = thumbnailScheduler
+        if (scheduler != null) {
+            scheduler.markDirty(projectDirty = true, dirtyLayerIds = dirtyLayerIds)
+            onInputRenderRequested?.invoke()
+        } else {
+            onThumbnailCaptured?.invoke(thumbnailCapture.capture(layerStack))
+        }
+    }
+
+    /** Called only after a successful GPU edit of [layerId]. */
+    private fun markLayerThumbnailDirty(layerId: Long) {
+        val scheduler = thumbnailScheduler
+        if (scheduler != null) {
+            scheduler.markLayerDirty(layerId)
+            scheduler.markProjectDirty()
+            onInputRenderRequested?.invoke()
+        } else {
+            captureThumbnail()
+        }
+    }
+
+    /**
+     * Records published preview files on the GL thread. Scheduler generations
+     * ensure every listed layer still has the pixels used to create its image.
+     */
+    fun applyThumbnailBuild(result: ThumbnailBuildResult) {
+        checkOnGlThread()
+        result.layerPreviews.forEach { (layerId, file) ->
+            layerStack.findLayerById(layerId)?.let { layer ->
+                layerThumbnailPaths[layerId] = file.absolutePath
+                layerThumbnailVersions[layerId] = layer.version
+            }
+        }
+        layerThumbnailPaths.keys.retainAll(layerStack.allLayers().map(PaintLayer::id).toSet())
+        layerThumbnailVersions.keys.retainAll(layerStack.allLayers().map(PaintLayer::id).toSet())
+        // layerDocumentFrom copies the current PaintLayer.version into
+        // thumbnailVersion, and updateProjectDocument atomically publishes the
+        // resulting document snapshot to the autosave bridge.
+        updateProjectDocument { it }
+        publishState()
+    }
+
+    /**
+     * Makes WebP previews restored from the persisted project immediately
+     * available to Compose. An older persisted preview may never replace a
+     * newer runtime image after a stroke has incremented the layer version.
+     */
+    fun installRestoredLayerThumbnails(previews: Map<Long, File>) {
+        // queueEvent() is allowed to run before Renderer.onSurfaceCreated().
+        // At that time no GL owner or LayerStack exists yet, so checking the
+        // thread here used to crash application startup.
+        if (glThread == null) {
+            deferredRestoredLayerThumbnails = previews
+            return
+        }
+        checkOnGlThread()
+        var changed = false
+        previews.forEach { (layerId, file) ->
+            val layer = layerStack.findLayerById(layerId) ?: return@forEach
+            val storedVersion = projectDocument.layers
+                .firstOrNull { it.id == layerId }
+                ?.thumbnailVersion
+                ?: return@forEach
+            if (file.isFile && layer.version == storedVersion && layerThumbnailVersions[layerId] == null) {
+                layerThumbnailPaths[layerId] = file.absolutePath
+                layerThumbnailVersions[layerId] = storedVersion
+                changed = true
+            }
+        }
+        if (changed) publishState()
+    }
+
+    private fun syncLayerDocument(layer: PaintLayer) {
+        updateProjectDocument { document ->
+            document.copy(
+                layers = document.layers.map { stored ->
+                    if (stored.id == layer.id) layerDocumentFrom(layer, stored.pixelFile) else stored
+                },
+                activeLayerId = layerStack.activeLayerId,
+            )
+        }
+    }
+
+    private fun layerDocumentFrom(
+        layer: PaintLayer,
+        pixelFile: String = ProjectDocument.pixelFileFor(layer.id),
+    ): LayerDocument = LayerDocument(
+        id = layer.id,
+        name = layer.name,
+        visible = layer.isVisible,
+        locked = layer.isLocked,
+        opacity = layer.opacity,
+        blendMode = layer.blendMode,
+        pixelFile = pixelFile,
+        thumbnailVersion = layerThumbnailVersions[layer.id]
+            ?: projectDocument.layers.firstOrNull { it.id == layer.id }?.thumbnailVersion
+            ?: 0L,
+    )
+
     private fun publishState() {
         val listener = onStateChange ?: return
         val layers = layerStack.allLayers()
@@ -941,18 +1082,22 @@ class EngineRenderer(
                         opacity = layer.opacity,
                         active = layer.id == activeLayerId,
                         canDelete = !layer.isLocked && canDeleteLayers,
+                        thumbnailPath = layerThumbnailPaths[layer.id],
+                        thumbnailVersion = layerThumbnailVersions[layer.id]
+                            ?: projectDocument.layers.firstOrNull { it.id == layer.id }?.thumbnailVersion
+                            ?: 0L,
                     )
                 },
-                canUndo = undoManager.canUndo && pendingUndoCount == 0,
-                canRedo = undoManager.canRedo && pendingUndoCount == 0,
+                canUndo = undoManager.canUndo && undoPipeline.pendingCount == 0,
+                canRedo = undoManager.canRedo && undoPipeline.pendingCount == 0,
                 brushSizePx = brushSettings.baseRadiusPx * 2f,
                 brushOpacity = brushSettings.opacity,
                 activeLayerId = activeLayerId,
                 ready = layerStack.canvasWidth > 0 && layerStack.canvasHeight > 0,
                 undoDiagnostics = UndoDiagnostics(
-                    pendingJobs = pendingUndoCount,
-                    staleResults = undoStaleResults,
-                    compressionFailures = undoCompressionFailures,
+                    pendingJobs = undoPipeline.pendingCount,
+                    staleResults = undoPipeline.staleResultCount,
+                    compressionFailures = undoPipeline.compressionFailureCount,
                     restoreFailures = undoRestoreFailures,
                     memoryBytes = undoManager.memoryBytes,
                 ),
@@ -1046,6 +1191,15 @@ class EngineRenderer(
 
     private fun nextLayerName(): String = "Слой ${layerStack.count + 1}"
 
+    private fun nextDuplicateLayerName(sourceName: String): String {
+        val base = "$sourceName копия"
+        val names = layerStack.allLayers().map(PaintLayer::name).toSet()
+        if (base !in names) return base
+        var number = 2
+        while ("$base $number" in names) number++
+        return "$base $number"
+    }
+
     private fun renderCapsulePreview(strokeBrush: BrushSettings) {
         val renderer = capsuleRenderer ?: return
 
@@ -1077,7 +1231,8 @@ class EngineRenderer(
         if (layer.isLocked) return
         if (!capsuleEmitter.hasStroke) return
         if (!computeCapsuleDirtyBounds(dirtyBounds)) return
-        expandBoundsToTiles(dirtyBounds, layerStack.canvasWidth, layerStack.canvasHeight)
+        val blitter = strokeBlitter ?: return
+        val strokeGeometry = geometry ?: return
 
         /*
          * Сначала строим stroke в отдельном offscreen target.
@@ -1100,46 +1255,17 @@ class EngineRenderer(
             flow = strokeBrush.flow,
         )
 
-        val beforeRaw = TileSnapshotCapture.capture(
-            layer.target,
-            dirtyBounds,
-        )
-
-        /*
-         * Здесь нужен StrokeBlitter:
-         * strokeTarget -> layer.target
-         *
-         * Он должен использовать:
-         * GL_FUNC_ADD
-         * GL_ONE, GL_ONE_MINUS_SRC_ALPHA
-         * premultiplied source-over
-         * opacity = the active stroke's snapshotted brush opacity
-         */
-        strokeBlitter?.blit(
-            layer = layer.target,
-            geometry = checkNotNull(geometry),
-            strokeTextureId = strokeTarget.textureId,
-            canvasToFbo = canvasToFboMatrix,
-            width = layerStack.canvasWidth,
-            height = layerStack.canvasHeight,
-            opacity = strokeBrush.opacity.coerceIn(0f, 1f),
-        ) ?: error(
-            "Capsule commit requires StrokeBlitter"
-        )
-        GLES30.glFlush()
-
-        layer.version++
-
-        val afterRaw = TileSnapshotCapture.capture(
-            layer.target,
-            dirtyBounds,
-        )
-
-        enqueueUndoCompression(
-            layerId = layer.id,
-            beforeRaw = beforeRaw,
-            afterRaw = afterRaw,
-        )
+        if (strokeCommitter.commit(
+            layer = layer,
+            geometry = strokeGeometry,
+            blitter = blitter,
+            dirtyBounds = dirtyBounds,
+            canvasWidth = layerStack.canvasWidth,
+            canvasHeight = layerStack.canvasHeight,
+            opacity = strokeBrush.opacity,
+        )) {
+            publishState()
+        }
     }
 
     private fun computeCapsuleDirtyBounds(
@@ -1166,10 +1292,8 @@ class EngineRenderer(
 
     companion object {
         private const val BRUSH_DIAG_TAG = "BrushDiag"
-        const val DEFAULT_CANVAS_WIDTH = 1500
-        const val DEFAULT_CANVAS_HEIGHT = 2000
+        private const val THUMBNAIL_TAG = "ThumbnailBuild"
         private const val AA_MARGIN_PX = 4f
         private const val STAMP_DIRTY_MARGIN_PX = 4f
-        private const val MAX_PENDING_UNDO_JOBS = 8
     }
 }
