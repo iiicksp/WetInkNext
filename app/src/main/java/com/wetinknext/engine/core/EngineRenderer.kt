@@ -122,6 +122,7 @@ class EngineRenderer(
     private val gpuBudget = RenderTargetBudget()
     private val targets = BudgetedTargets(gpuBudget)
     private val strokeTarget = RenderTarget()
+    private val smudgeTarget = RenderTarget()
     /** RGBA8 screen-space preview; never used for final document pixels. */
     private val strokePreviewTarget = RenderTarget()
     /** Screen-sized union mask for realtime STAMP NON_BUILDUP preview. */
@@ -767,6 +768,17 @@ class EngineRenderer(
         ) { "GPU budget cannot fit the document stroke target" }
         strokeTarget.clear(0f, 0f, 0f, 0f)
         PboReadbackProbe.verify(strokeTarget)
+
+        check(
+            targets.create(
+                target = smudgeTarget,
+                label = "smudgeTarget",
+                width = projectDocument.width,
+                height = projectDocument.height,
+                preferHalfFloat = nextCaps.supportsHalfFloatColorBuffer,
+            ),
+        ) { "GPU budget cannot fit the document smudge target" }
+        smudgeTarget.clear(0f, 0f, 0f, 0f)
         ViewTransform.buildCanvasToFbo(
             projectDocument.width.toFloat(),
             projectDocument.height.toFloat(),
@@ -1262,6 +1274,12 @@ class EngineRenderer(
                                 dabRenderer?.apply {
                                     beginStroke()
                                     setFalloff(strokeBrush.falloff)
+                                    if (strokeBrush.smudgeStrength > 0f) {
+                                        captureSmudgeBackground()
+                                        setSmudge(smudgeTarget.textureId, strokeBrush.smudgeStrength, strokeBrush.smudgeLength)
+                                    } else {
+                                        clearSmudge()
+                                    }
                                 }
                                 stampEmitter.begin(batch, dabBuffer, strokeBrush)
                                 stampPreviewInitialized = previewAllocated
@@ -1909,6 +1927,32 @@ class EngineRenderer(
                 coverageOnly = false,
             )
         }
+    }
+
+    private fun captureSmudgeBackground() {
+        val compositor = currentCompositor ?: return
+        val geom = currentGeometry ?: return
+        smudgeTarget.clear(0f, 0f, 0f, 0f)
+        smudgeTarget.bind()
+        GLES30.glViewport(0, 0, smudgeTarget.width, smudgeTarget.height)
+        GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+        GLES30.glDisable(GLES30.GL_BLEND)
+
+        compositor.render(
+            destination = smudgeTarget,
+            geometry = geom,
+            layers = layerStack,
+            activeLayerId = -1L,
+            strokeTextureId = 0,
+            strokeCoverageTextureId = 0,
+            strokeIsScreenSpace = false,
+            strokeMode = StrokeRenderMode.NORMAL,
+            strokeErase = false,
+            strokeColorLinear = activeStrokeColorLinear,
+            strokeOpacity = 1f,
+            canvasToClip = canvasToFboMatrix,
+        )
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
     }
 
     private fun commitCapsuleStroke(strokeBrush: BrushSettings) {

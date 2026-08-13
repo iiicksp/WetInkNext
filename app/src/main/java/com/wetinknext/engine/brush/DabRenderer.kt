@@ -36,6 +36,10 @@ class DabRenderer(private val maxDabs: Int) {
     private var uSecondaryShapeTex = -1
     private var uSecondaryShapeScale = -1
 
+    private var uSmudgeTex = -1
+    private var uSmudgeStrength = -1
+    private var uSmudgeLength = -1
+
     private var grainTextureId = 0
     private var grainScale = 1f
     private var grainCanvasLocked = true
@@ -85,6 +89,9 @@ class DabRenderer(private val maxDabs: Int) {
         uSecondaryShapeActive = GLES30.glGetUniformLocation(currentProgram.id, "uSecondaryShapeActive")
         uSecondaryShapeTex = GLES30.glGetUniformLocation(currentProgram.id, "uSecondaryShapeTex")
         uSecondaryShapeScale = GLES30.glGetUniformLocation(currentProgram.id, "uSecondaryShapeScale")
+        uSmudgeTex = GLES30.glGetUniformLocation(currentProgram.id, "uSmudgeTex")
+        uSmudgeStrength = GLES30.glGetUniformLocation(currentProgram.id, "uSmudgeStrength")
+        uSmudgeLength = GLES30.glGetUniformLocation(currentProgram.id, "uSmudgeLength")
 
         check(
             uCanvasToClip >= 0 && uColorLinear >= 0 && uStrokeOpacity >= 0 &&
@@ -129,6 +136,9 @@ class DabRenderer(private val maxDabs: Int) {
         GLES30.glEnableVertexAttribArray(2)
         GLES30.glVertexAttribPointer(2, 3, GLES30.GL_FLOAT, false, DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES, 16)
         GLES30.glVertexAttribDivisor(2, 1)
+        GLES30.glEnableVertexAttribArray(3)
+        GLES30.glVertexAttribPointer(3, 2, GLES30.GL_FLOAT, false, DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES, 28)
+        GLES30.glVertexAttribDivisor(3, 1)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         GLES30.glBindVertexArray(0)
     }
@@ -230,6 +240,18 @@ class DabRenderer(private val maxDabs: Int) {
     fun clearSecondaryShape() {
         secondaryShapeTextureId = 0
         secondaryShapeScale = 1f
+    }
+
+    fun setSmudge(textureId: Int, strength: Float, length: Float) {
+        smudgeTextureId = textureId
+        smudgeStrength = strength.coerceIn(0f, 1f)
+        smudgeLength = length
+    }
+
+    fun clearSmudge() {
+        smudgeTextureId = 0
+        smudgeStrength = 0f
+        smudgeLength = 0f
     }
 
     fun clearGrainTexture() {
@@ -468,6 +490,9 @@ class DabRenderer(private val maxDabs: Int) {
         GLES30.glUniform1i(uSecondaryShapeActive, if (secondaryShapeTextureId != 0) 1 else 0)
         GLES30.glUniform1f(uSecondaryShapeScale, secondaryShapeScale)
 
+        GLES30.glUniform1f(uSmudgeStrength, smudgeStrength)
+        GLES30.glUniform1f(uSmudgeLength, smudgeLength)
+
         if (grainTextureId != 0) {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, grainTextureId)
@@ -482,6 +507,11 @@ class DabRenderer(private val maxDabs: Int) {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE4)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, secondaryShapeTextureId)
             GLES30.glUniform1i(uSecondaryShapeTex, 4)
+        }
+        if (smudgeTextureId != 0 && smudgeStrength > 0f) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE5)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, smudgeTextureId)
+            GLES30.glUniform1i(uSmudgeTex, 5)
         }
 
         GLES30.glBindVertexArray(vaoId)
@@ -501,6 +531,9 @@ class DabRenderer(private val maxDabs: Int) {
         GLES30.glVertexAttribPointer(
             2, 3, GLES30.GL_FLOAT, false, DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES, 16
         )
+        GLES30.glVertexAttribPointer(
+            3, 2, GLES30.GL_FLOAT, false, DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES, 28
+        )
 
         GLES30.glDrawArraysInstanced(GLES30.GL_TRIANGLE_STRIP, 0, 4, count)
         
@@ -510,6 +543,14 @@ class DabRenderer(private val maxDabs: Int) {
         }
         if (shapeTextureId != 0) {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        }
+        if (secondaryShapeTextureId != 0) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE4)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
+        }
+        if (smudgeTextureId != 0 && smudgeStrength > 0f) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE5)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
         }
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)

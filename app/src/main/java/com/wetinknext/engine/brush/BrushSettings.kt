@@ -91,6 +91,8 @@ data class BrushSettings(
     val textureContrast: Float = 1f,
     val secondaryShapeAssetPath: String? = null,
     val secondaryShapeScale: Float = 1f,
+    val smudgeStrength: Float = 0f,
+    val smudgeLength: Float = 0.5f,
     val rgbToAlpha: Boolean = false,
     val pixelPen: Boolean = false,
     val squareStroke: Boolean = false,

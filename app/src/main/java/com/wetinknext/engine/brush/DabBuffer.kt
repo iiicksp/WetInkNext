@@ -17,6 +17,8 @@ class DabBuffer(val capacity: Int = DEFAULT_CAPACITY) {
         coverage: Float,
         flow: Float,
         hardness: Float,
+        dx: Float,
+        dy: Float,
     ): Boolean {
         if (count >= capacity) {
             overflowCount++
@@ -29,6 +31,8 @@ class DabBuffer(val capacity: Int = DEFAULT_CAPACITY) {
         floats.put(coverage.coerceIn(0f, 1f))
         floats.put(flow.coerceIn(0f, 1f))
         floats.put(hardness.coerceIn(0f, 1f))
+        floats.put(dx)
+        floats.put(dy)
         count++
         return true
     }
@@ -65,5 +69,5 @@ class DabBuffer(val capacity: Int = DEFAULT_CAPACITY) {
             )
         }
     }
-    companion object { const val FLOATS_PER_DAB = 7; const val DEFAULT_CAPACITY = 8192 }
+    companion object { const val FLOATS_PER_DAB = 9; const val DEFAULT_CAPACITY = 8192 }
 }

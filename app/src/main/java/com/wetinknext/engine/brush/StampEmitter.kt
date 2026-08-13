@@ -27,6 +27,9 @@ class StampEmitter(initialSettings: BrushSettings) {
     private var lastOrientationRad = 0f
     private var lastVelocity = 0f
     private var lastEmitTimeNanos = 0L
+
+    private var lastDabX = 0f
+    private var lastDabY = 0f
     private var randomState = 0x13579BDF
     private var strokeSeed = 0
     private var carriedDistance = 0f
@@ -81,6 +84,8 @@ class StampEmitter(initialSettings: BrushSettings) {
         lastOrientationRad = s.orientationRad
         lastVelocity = 0f
         lastEmitTimeNanos = s.timestampNanos
+        lastDabX = lastX
+        lastDabY = lastY
         hasLast = true
         p0x = lastX; p0y = lastY; p0p = lastPressure
         p1x = lastX; p1y = lastY; p1p = lastPressure
@@ -308,6 +313,12 @@ class StampEmitter(initialSettings: BrushSettings) {
             random01 = nextRandom01(),
             out = resolvedDab,
         )
+
+        val dx = x - lastDabX
+        val dy = y - lastDabY
+        lastDabX = x
+        lastDabY = y
+
         out.add(
             x = x + resolvedDab.scatterX,
             y = y + resolvedDab.scatterY,
@@ -316,6 +327,8 @@ class StampEmitter(initialSettings: BrushSettings) {
             coverage = resolvedDab.coverage,
             flow = resolvedDab.flow,
             hardness = resolvedDab.hardness,
+            dx = dx,
+            dy = dy,
         )
     }
 

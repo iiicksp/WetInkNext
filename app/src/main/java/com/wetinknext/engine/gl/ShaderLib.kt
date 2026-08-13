@@ -96,10 +96,12 @@ object ShaderLib {
         layout(location = 0) in vec2 aCorner;
         layout(location = 1) in vec4 iDab0;
         layout(location = 2) in vec3 iDab1;
+        layout(location = 3) in vec2 iDab2;
         uniform mat4 uCanvasToClip;
         uniform vec2 uCanvasSize;
         out vec2 vLocal;
         out vec2 vCanvasUv;
+        out vec2 vVelocity;
         flat out float vCoverage;
         flat out float vFlow;
         flat out float vHardness;
@@ -110,6 +112,7 @@ object ShaderLib {
             vCoverage=iDab1.x;
             vFlow=iDab1.y;
             vHardness=iDab1.z;
+            vVelocity=iDab2;
             vec2 p = iDab0.xy+r*iDab0.z;
             vCanvasUv = p / uCanvasSize;
             gl_Position=uCanvasToClip*vec4(p,0.,1.);
@@ -141,6 +144,10 @@ object ShaderLib {
         uniform int uSecondaryShapeActive;
         uniform sampler2D uSecondaryShapeTex;
         uniform float uSecondaryShapeScale;
+        uniform sampler2D uSmudgeTex;
+        uniform float uSmudgeStrength;
+        uniform float uSmudgeLength;
+        in vec2 vVelocity;
         out vec4 fragColor;
         float luminance(vec3 color) {
             return dot(color, vec3(0.299, 0.587, 0.114));
@@ -219,7 +226,17 @@ object ShaderLib {
                 return;
             }
             float a = coverage * uStrokeOpacity;
-            fragColor = vec4(uColorLinear * a, a);
+            vec3 color = uColorLinear;
+            if (uSmudgeStrength > 0.0) {
+                float vlen = length(vVelocity);
+                if (vlen > 0.001) {
+                    vec2 pull = (vVelocity / vlen) * uSmudgeLength * 100.0;
+                    vec2 smudgeUv = vCanvasUv - (pull / uCanvasSize);
+                    vec3 smudgeColor = texture(uSmudgeTex, smudgeUv).rgb;
+                    color = mix(color, smudgeColor, uSmudgeStrength);
+                }
+            }
+            fragColor = vec4(color * a, a);
         }
     """
     const val nonBuildupStrokeFragment = """#version 300 es
