@@ -58,9 +58,12 @@ data class ProjectDocument(
         const val MAX_DIMENSION = 8192
         const val MIN_DPI = 72
         const val MAX_DPI = 1200
-        const val MAX_INITIAL_GPU_BYTES = 256L * 1024L * 1024L
-        private const val INITIAL_RENDER_TARGET_COUNT = 3L
+        const val MAX_INITIAL_GPU_BYTES = 384L * 1024L * 1024L
+        private const val DOCUMENT_TARGET_COUNT = 3L
+        private const val SCREEN_TARGET_COUNT = 3L
+        private const val ASSUMED_SCREEN_PIXELS = 2560L * 1600L
         private const val RGBA16F_BYTES_PER_PIXEL = 8L
+        private const val RGBA8_BYTES_PER_PIXEL = 4L
         val SUPPORTED_COLOR_PROFILES = setOf(SRGB_PROFILE, DISPLAY_P3_PROFILE)
 
         fun newUntitled(
@@ -107,13 +110,17 @@ data class ProjectDocument(
             )
         }
 
-        /** Validates the initial two layer targets plus the transient stroke target. */
+        /** Validates mandatory document targets and the expected screen-space working set. */
         fun validateNewCanvas(width: Int, height: Int, dpi: Int, colorProfile: String) {
             require(width in MIN_DIMENSION..MAX_DIMENSION) { "Canvas width must be within $MIN_DIMENSION..$MAX_DIMENSION px" }
             require(height in MIN_DIMENSION..MAX_DIMENSION) { "Canvas height must be within $MIN_DIMENSION..$MAX_DIMENSION px" }
             require(dpi in MIN_DPI..MAX_DPI) { "Canvas DPI must be within $MIN_DPI..$MAX_DPI" }
             require(normalizeColorProfile(colorProfile) in SUPPORTED_COLOR_PROFILES) { "Unsupported color profile: $colorProfile" }
-            val estimatedBytes = width.toLong() * height * INITIAL_RENDER_TARGET_COUNT * RGBA16F_BYTES_PER_PIXEL
+            val documentBytes =
+                width.toLong() * height * DOCUMENT_TARGET_COUNT * RGBA16F_BYTES_PER_PIXEL
+            val screenBytes =
+                ASSUMED_SCREEN_PIXELS * SCREEN_TARGET_COUNT * RGBA8_BYTES_PER_PIXEL
+            val estimatedBytes = documentBytes + screenBytes
             require(estimatedBytes <= MAX_INITIAL_GPU_BYTES) {
                 "Canvas requires ${estimatedBytes / (1024 * 1024)} MB GPU memory; limit is ${MAX_INITIAL_GPU_BYTES / (1024 * 1024)} MB"
             }

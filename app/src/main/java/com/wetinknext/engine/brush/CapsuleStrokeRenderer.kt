@@ -45,6 +45,7 @@ class CapsuleStrokeRenderer(
     private var uTextureDepth = -1
     private var uTextureContrast = -1
     private var uFlow = -1
+    private var uCoverageOnly = -1
 
     private var grainTextureId = 0
     private var grainScale = 1f
@@ -139,6 +140,10 @@ class CapsuleStrokeRenderer(
             currentProgram.id,
             "uFlow",
         )
+        uCoverageOnly = GLES30.glGetUniformLocation(
+            currentProgram.id,
+            "uCoverageOnly",
+        )
 
         check(uCanvasToClip >= 0) {
             "Capsule shader uniform uCanvasToClip is missing"
@@ -151,6 +156,9 @@ class CapsuleStrokeRenderer(
         }
         check(uFlow >= 0) {
             "Capsule shader uniform uFlow is missing"
+        }
+        check(uCoverageOnly >= 0) {
+            "Capsule shader uniform uCoverageOnly is missing"
         }
 
         val corners = floatArrayOf(
@@ -379,12 +387,15 @@ class CapsuleStrokeRenderer(
             target = target,
             width = width,
             height = height,
+            documentWidth = width,
+            documentHeight = height,
             canvasToClip = canvasToClip,
             colorLinear = colorLinear,
             firstSegment = first,
             count = count,
             blendPolicy = blendPolicy,
             flow = flow,
+            coverageOnly = false,
         )
 
         if (drawn) {
@@ -412,12 +423,103 @@ class CapsuleStrokeRenderer(
             target = target,
             width = width,
             height = height,
+            documentWidth = width,
+            documentHeight = height,
             canvasToClip = canvasToClip,
             colorLinear = colorLinear,
             firstSegment = 0,
             count = segmentCount,
             blendPolicy = blendPolicy,
             flow = flow,
+            coverageOnly = false,
+        )
+    }
+
+    /** Draws only new segments into an RGBA8 screen-sized preview target. */
+    fun drawPendingPreview(
+        target: RenderTarget,
+        previewWidth: Int,
+        previewHeight: Int,
+        documentWidth: Int,
+        documentHeight: Int,
+        canvasToClip: FloatArray,
+        colorLinear: FloatArray,
+        blendPolicy: BlendPolicy,
+        flow: Float,
+    ) {
+        val first = uploadedSegmentCount
+        val count = segmentCount - uploadedSegmentCount
+        if (count <= 0) return
+
+        val drawn = drawRange(
+            target = target,
+            width = previewWidth,
+            height = previewHeight,
+            documentWidth = documentWidth,
+            documentHeight = documentHeight,
+            canvasToClip = canvasToClip,
+            colorLinear = colorLinear,
+            firstSegment = first,
+            count = count,
+            blendPolicy = blendPolicy,
+            flow = flow,
+            coverageOnly = false,
+        )
+        if (drawn) uploadedSegmentCount = segmentCount
+    }
+
+    /** Adds only new capsule segments to an RGBA8 GL_MAX coverage mask. */
+    fun drawPendingCoveragePreview(
+        target: RenderTarget,
+        previewWidth: Int,
+        previewHeight: Int,
+        documentWidth: Int,
+        documentHeight: Int,
+        canvasToClip: FloatArray,
+        flow: Float,
+    ) {
+        val first = uploadedSegmentCount
+        val count = segmentCount - first
+        if (count <= 0) return
+        val drawn = drawRange(
+            target = target,
+            width = previewWidth,
+            height = previewHeight,
+            documentWidth = documentWidth,
+            documentHeight = documentHeight,
+            canvasToClip = canvasToClip,
+            colorLinear = ZERO_COLOR,
+            firstSegment = first,
+            count = count,
+            blendPolicy = BlendPolicy.NON_BUILDUP,
+            flow = flow,
+            coverageOnly = true,
+        )
+        if (drawn) uploadedSegmentCount = segmentCount
+    }
+
+    /** Rebuilds every segment into the document-sized union coverage mask. */
+    fun drawAllCoverage(
+        target: RenderTarget,
+        width: Int,
+        height: Int,
+        canvasToClip: FloatArray,
+        flow: Float,
+    ) {
+        if (segmentCount <= 0) return
+        drawRange(
+            target = target,
+            width = width,
+            height = height,
+            documentWidth = width,
+            documentHeight = height,
+            canvasToClip = canvasToClip,
+            colorLinear = ZERO_COLOR,
+            firstSegment = 0,
+            count = segmentCount,
+            blendPolicy = BlendPolicy.NON_BUILDUP,
+            flow = flow,
+            coverageOnly = true,
         )
     }
 
@@ -431,12 +533,15 @@ class CapsuleStrokeRenderer(
         target: RenderTarget,
         width: Int,
         height: Int,
+        documentWidth: Int,
+        documentHeight: Int,
         canvasToClip: FloatArray,
         colorLinear: FloatArray,
         firstSegment: Int,
         count: Int,
         blendPolicy: BlendPolicy,
         flow: Float,
+        coverageOnly: Boolean,
     ): Boolean {
         val currentProgram = program ?: return false
 
@@ -463,7 +568,13 @@ class CapsuleStrokeRenderer(
 
         GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
 
-        blendController.begin(blendPolicy)
+        if (coverageOnly) {
+            GLES30.glEnable(GLES30.GL_BLEND)
+            GLES30.glBlendEquation(GLES30.GL_MAX)
+            GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE)
+        } else {
+            blendController.begin(blendPolicy)
+        }
 
         currentProgram.use()
 
@@ -484,8 +595,8 @@ class CapsuleStrokeRenderer(
 
         GLES30.glUniform2f(
             uCanvasSize,
-            width.toFloat(),
-            height.toFloat(),
+            documentWidth.toFloat(),
+            documentHeight.toFloat(),
         )
 
         GLES30.glUniform1f(
@@ -517,6 +628,7 @@ class CapsuleStrokeRenderer(
             uFlow,
             flow.coerceIn(0f, 1f),
         )
+        GLES30.glUniform1i(uCoverageOnly, if (coverageOnly) 1 else 0)
 
         if (grainTextureId != 0) {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
@@ -546,7 +658,7 @@ class CapsuleStrokeRenderer(
 
         GLES30.glBufferSubData(
             GLES30.GL_ARRAY_BUFFER,
-            firstSegment * STRIDE_BYTES,
+            0,
             count * STRIDE_BYTES,
             instanceData,
         )
@@ -563,7 +675,7 @@ class CapsuleStrokeRenderer(
             GLES30.GL_FLOAT,
             false,
             STRIDE_BYTES,
-            firstSegment * STRIDE_BYTES,
+            0,
         )
 
         GLES30.glVertexAttribPointer(
@@ -572,7 +684,7 @@ class CapsuleStrokeRenderer(
             GLES30.GL_FLOAT,
             false,
             STRIDE_BYTES,
-            firstSegment * STRIDE_BYTES + 4 * Float.SIZE_BYTES,
+            4 * Float.SIZE_BYTES,
         )
 
         GLES30.glDrawArraysInstanced(
@@ -598,7 +710,13 @@ class CapsuleStrokeRenderer(
         )
         GLES30.glBindVertexArray(0)
 
-        blendController.end()
+        if (coverageOnly) {
+            GLES30.glBlendEquation(GLES30.GL_FUNC_ADD)
+            GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+            GLES30.glDisable(GLES30.GL_BLEND)
+        } else {
+            blendController.end()
+        }
 
         GLES30.glBindFramebuffer(
             GLES30.GL_FRAMEBUFFER,
@@ -697,6 +815,7 @@ class CapsuleStrokeRenderer(
         uTextureDepth = -1
         uTextureContrast = -1
         uFlow = -1
+        uCoverageOnly = -1
         grainTextureId = 0
 
         segmentCount = 0
@@ -716,6 +835,8 @@ class CapsuleStrokeRenderer(
     }
 
     companion object {
+
+        private val ZERO_COLOR = floatArrayOf(0f, 0f, 0f)
 
         private const val ATTR_CORNER = 0
         private const val ATTR_SEGMENT_A = 1

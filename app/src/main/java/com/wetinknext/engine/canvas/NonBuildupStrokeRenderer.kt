@@ -6,13 +6,13 @@ import com.wetinknext.engine.gl.GlProgram
 import com.wetinknext.engine.gl.RenderTarget
 import com.wetinknext.engine.gl.ShaderLib
 
-/** Applies a stamped colour field once, using the union coverage mask as alpha. */
+/** Applies a fixed linear stroke colour once, using a union coverage mask. */
 class NonBuildupStrokeRenderer {
     private var program: GlProgram? = null
     private var uCanvasToClip = -1
     private var uCanvasSize = -1
-    private var uColorTex = -1
     private var uCoverageTex = -1
+    private var uColorLinear = -1
     private var uOpacity = -1
 
     fun create() {
@@ -22,10 +22,10 @@ class NonBuildupStrokeRenderer {
         p.use()
         uCanvasToClip = GLES30.glGetUniformLocation(p.id, "uCanvasToClip")
         uCanvasSize = GLES30.glGetUniformLocation(p.id, "uCanvasSize")
-        uColorTex = GLES30.glGetUniformLocation(p.id, "uColorTex")
         uCoverageTex = GLES30.glGetUniformLocation(p.id, "uCoverageTex")
+        uColorLinear = GLES30.glGetUniformLocation(p.id, "uColorLinear")
         uOpacity = GLES30.glGetUniformLocation(p.id, "uOpacity")
-        check(uCanvasToClip >= 0 && uCanvasSize >= 0 && uColorTex >= 0 && uCoverageTex >= 0 && uOpacity >= 0) {
+        check(uCanvasToClip >= 0 && uCanvasSize >= 0 && uCoverageTex >= 0 && uColorLinear >= 0 && uOpacity >= 0) {
             "NonBuildupStrokeRenderer uniforms missing"
         }
     }
@@ -33,8 +33,8 @@ class NonBuildupStrokeRenderer {
     fun blit(
         layer: RenderTarget,
         geometry: CanvasGeometry,
-        colorTextureId: Int,
         coverageTextureId: Int,
+        colorLinear: FloatArray,
         canvasToFbo: FloatArray,
         width: Int,
         height: Int,
@@ -42,7 +42,7 @@ class NonBuildupStrokeRenderer {
         erase: Boolean = false,
     ) {
         val p = program ?: return
-        if (colorTextureId == 0 || coverageTextureId == 0) return
+        if (coverageTextureId == 0 || colorLinear.size < 3) return
         layer.bind()
         GLES30.glViewport(0, 0, width, height)
         GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
@@ -56,17 +56,13 @@ class NonBuildupStrokeRenderer {
         p.use()
         GLES30.glUniformMatrix4fv(uCanvasToClip, 1, false, canvasToFbo, 0)
         GLES30.glUniform2f(uCanvasSize, width.toFloat(), height.toFloat())
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, colorTextureId)
-        GLES30.glUniform1i(uColorTex, 0)
         GLES30.glActiveTexture(GLES30.GL_TEXTURE1)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, coverageTextureId)
         GLES30.glUniform1i(uCoverageTex, 1)
+        GLES30.glUniform3f(uColorLinear, colorLinear[0], colorLinear[1], colorLinear[2])
         GLES30.glUniform1f(uOpacity, opacity.coerceIn(0f, 1f))
         geometry.draw()
         GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
-        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
-        GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
         GLES30.glDisable(GLES30.GL_BLEND)
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
@@ -77,8 +73,8 @@ class NonBuildupStrokeRenderer {
         program = null
         uCanvasToClip = -1
         uCanvasSize = -1
-        uColorTex = -1
         uCoverageTex = -1
+        uColorLinear = -1
         uOpacity = -1
     }
 }

@@ -13,6 +13,34 @@ data class BrushUiCategory(
 )
 
 object BrushLibrary {
+    /**
+     * Soft, low-flow airbrush. Kept in the stamp pipeline because its look is
+     * built from many translucent dabs, rather than a single ribbon contour.
+     */
+    val airbrush = BrushPreset(
+        id = "airbrush",
+        settings = BrushSettings(
+            name = "Airbrush",
+            category = "Paint",
+            renderMode = BrushRenderMode.STAMP,
+            baseRadiusPx = 80f,
+            opacity = 0.18f,
+            flow = 0.08f,
+            spacing = 0.035f,
+            spacingUsesDiameter = true,
+            pressureToSize = false,
+            pressureToOpacity = true,
+            pressureGamma = 1.15f,
+            hardness = 0f,
+            falloff = DabFalloff.AIRBRUSH,
+            emissionUsesTime = true,
+            emissionRateHz = 60f,
+            antiAliasLevel = 3,
+            blendPolicy = BlendPolicy.NORMAL_BUILDUP,
+            useTempStrokeBuffer = true,
+        ),
+    )
+
     val pencil6B = BrushPreset(
         id = "pencil_6b",
         settings = BrushSettings(
@@ -25,6 +53,7 @@ object BrushLibrary {
             spacing = 0.08f,
             spacingUsesDiameter = true,
             hardness = 0.72f,
+            falloff = DabFalloff.SOFT,
             smoothing = 0.08f,
             streamline = 0.04f,
             pressureToSize = true,
@@ -57,10 +86,31 @@ object BrushLibrary {
             pressureGamma = 1.7f,
             minSizeRatio = 0.06f,
             blendPolicy = BlendPolicy.NON_BUILDUP,
+            ribbon = RibbonSettings(
+                autoCloseLoop = false,
+            ),
         )
     )
 
+    /** Baseline ink preset for checking the capsule path without geometric taper. */
+    val pen = BrushPreset(
+        id = "pen",
+        settings = gPen.settings.copy(
+            name = "Pen",
+            ribbon = gPen.settings.ribbon.copy(
+                taperStartPx = 0f,
+                taperEndPx = 0f,
+                autoCloseLoop = true,
+            ),
+        ),
+    )
+
     val allCategories = listOf(
+        BrushUiCategory(
+            name = "Paint",
+            icon = Icons.Default.Brush,
+            brushes = listOf(airbrush),
+        ),
         BrushUiCategory(
             name = "Pencil",
             icon = Icons.Default.Create,
@@ -69,7 +119,7 @@ object BrushLibrary {
         BrushUiCategory(
             name = "Ink",
             icon = Icons.Default.Brush,
-            brushes = listOf(gPen)
+            brushes = listOf(gPen, pen)
         ),
         BrushUiCategory(
             name = "Favorites",

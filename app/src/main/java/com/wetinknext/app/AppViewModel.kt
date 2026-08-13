@@ -277,7 +277,9 @@ class AppViewModel(
         autosaveCoordinator.schedule {
             val recoveryPayloads = pendingLayerPayloads
             if (recoveryPayloads.isNotEmpty()) {
-                runCatching { repository.saveRecovery(document, recoveryPayloads) }
+                withContext(Dispatchers.IO) {
+                    runCatching { repository.saveRecovery(document, recoveryPayloads) }
+                }
                     .onFailure { error -> uiState = uiState.copy(errorMessage = error.message) }
             }
 
@@ -288,13 +290,15 @@ class AppViewModel(
             val acknowledge = pendingTilesAcknowledgement
 
             uiState = uiState.copy(isSaving = true)
-            runCatching {
-                repository.save(
-                    document = documentToSave,
-                    changedLayerTiles = payloadsToSave,
-                    thumbnailWebp = thumbnailToSave,
-                    layerPreviewsWebp = layerPreviewsToSave,
-                )
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    repository.save(
+                        document = documentToSave,
+                        changedLayerTiles = payloadsToSave,
+                        thumbnailWebp = thumbnailToSave,
+                        layerPreviewsWebp = layerPreviewsToSave,
+                    )
+                }
             }
                 .onSuccess {
                     if (pendingSaveDocument == documentToSave) {

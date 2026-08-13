@@ -49,4 +49,15 @@ class ProjectDocumentTest {
             // Expected: two initial layers and the stroke target would exceed the budget.
         }
     }
+
+    @Test
+    fun fourKCanvasIsAllowedWithinBudget() {
+        val document = ProjectDocument.newUntitled(
+            width = 4096,
+            height = 2160,
+        )
+
+        assertEquals(4096, document.width)
+        assertEquals(2160, document.height)
+    }
 }

@@ -1,12 +1,15 @@
 package com.wetinknext.engine.core
 
 import com.wetinknext.engine.canvas.LayerStack
+import com.wetinknext.engine.gl.BudgetedTargets
 import com.wetinknext.engine.gl.GlCaps
 import com.wetinknext.engine.gl.RenderTarget
+import com.wetinknext.engine.gl.RenderTargetBudget
 
 /** Lightweight document facade retained for engine callers outside the renderer. */
 class PaintEngine {
     val layerStack = LayerStack()
+    private val targets = BudgetedTargets(RenderTargetBudget())
     val camera: Camera get() = layerStack.camera
     val canvasTarget: RenderTarget get() = checkNotNull(layerStack.activeLayer()).target
 
@@ -16,11 +19,11 @@ class PaintEngine {
         private set
 
     fun create(caps: GlCaps, width: Int, height: Int) {
-        layerStack.create(caps, width, height)
+        layerStack.create(caps, width, height, targets)
         initialized = true
     }
 
-    fun addLayer(name: String): Long = layerStack.addLayer(name).id
+    fun addLayer(name: String): Long? = layerStack.addLayer(name)?.id
 
     fun removeLayer(id: Long): Boolean = layerStack.removeLayer(id) != null
 

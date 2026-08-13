@@ -25,13 +25,17 @@ class LayerTileStore(initialPayloads: Map<Long, ByteArray> = emptyMap()) {
         changedTiles.forEach { writeTile(layer.id, it) }
     }
 
-    /** GL-thread hand-off: copying one completed tile is bounded and allocation-safe. */
+    /**
+     * GL-thread hand-off from a completed commit. Raw snapshots are immutable
+     * after capture, and Undo only reads them, so retain their arrays rather
+     * than allocating another full tile copy before persistence begins.
+     */
     fun markDirty(layerId: Long, changedTiles: List<RawTileSnapshot>) {
         clearedLayers.remove(layerId)
         val target = tiles.getOrPut(layerId) { ConcurrentHashMap() }
         val dirtyCoords = dirty.getOrPut(layerId) { ConcurrentHashMap.newKeySet() }
         changedTiles.forEach { tile ->
-            target[tile.coord] = PersistentLayerTiles.fromRaw(tile)
+            target[tile.coord] = PersistentLayerTiles.fromRawOwned(tile)
             dirtyCoords.add(tile.coord)
         }
     }

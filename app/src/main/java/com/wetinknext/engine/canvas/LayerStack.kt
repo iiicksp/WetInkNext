@@ -1,6 +1,7 @@
 package com.wetinknext.engine.canvas
 
 import com.wetinknext.engine.core.Camera
+import com.wetinknext.engine.gl.BudgetedTargets
 import com.wetinknext.engine.gl.GlCaps
 import com.wetinknext.domain.document.ProjectDocument
 
@@ -14,6 +15,7 @@ class LayerStack {
     private val layers = mutableListOf<PaintLayer>()
     private var nextId = 1L
     private var documentUsesHalfFloat = false
+    private var targetOwner: BudgetedTargets? = null
 
     var activeLayerId: Long = NO_LAYER
         private set
@@ -33,27 +35,35 @@ class LayerStack {
     fun indexOfLayer(id: Long): Int = layers.indexOfFirst { it.id == id }
 
     /** Creates the runtime stack from persisted layer metadata. */
-    fun create(caps: GlCaps, document: ProjectDocument) {
+    fun create(caps: GlCaps, document: ProjectDocument, targets: BudgetedTargets) {
         release()
+        targetOwner = targets
         canvasWidth = document.width
         canvasHeight = document.height
         documentUsesHalfFloat = caps.supportsHalfFloatColorBuffer
 
-        document.layers.forEachIndexed { index, source ->
-            val layer = PaintLayer(source.id, source.name).also {
-                it.isVisible = source.visible
-                it.isLocked = source.locked
-                it.opacity = source.opacity
-                it.blendMode = source.blendMode
-                it.version = source.thumbnailVersion
-                it.create(canvasWidth, canvasHeight, documentUsesHalfFloat)
+        try {
+            document.layers.forEachIndexed { index, source ->
+                val layer = PaintLayer(source.id, source.name).also {
+                    it.isVisible = source.visible
+                    it.isLocked = source.locked
+                    it.opacity = source.opacity
+                    it.blendMode = source.blendMode
+                    it.version = source.thumbnailVersion
+                }
+                check(layer.create(targets, canvasWidth, canvasHeight, documentUsesHalfFloat)) {
+                    "GPU budget cannot fit mandatory layer ${source.id}"
+                }
+                layers += layer
+                // Tile restoration is a later persistence step. Preserve the new
+                // document's white background until a stored pixel payload is loaded.
+                if (index == 0 && source.locked) {
+                    layer.target.clear(1f, 1f, 1f, 1f)
+                }
             }
-            // Tile restoration is a later persistence step. Preserve the new
-            // document's white background until a stored pixel payload is loaded.
-            if (index == 0 && source.locked) {
-                layer.target.clear(1f, 1f, 1f, 1f)
-            }
-            layers += layer
+        } catch (error: Throwable) {
+            release()
+            throw error
         }
 
         activeLayerId = document.activeLayerId ?: layers.last().id
@@ -61,29 +71,57 @@ class LayerStack {
     }
 
     /** Creates the locked opaque white background and one transparent drawing layer. */
-    fun create(caps: GlCaps, width: Int, height: Int) {
+    fun create(caps: GlCaps, width: Int, height: Int, targets: BudgetedTargets) {
         require(width > 0 && height > 0)
         release()
+        targetOwner = targets
         canvasWidth = width
         canvasHeight = height
         documentUsesHalfFloat = caps.supportsHalfFloatColorBuffer
 
-        val background = newLayer("Фон", documentUsesHalfFloat).also {
+        val background = checkNotNull(newLayer("Фон", documentUsesHalfFloat)).also {
             it.isLocked = true
             it.target.clear(1f, 1f, 1f, 1f)
         }
         layers += background
 
-        val drawing = newLayer("Слой 1", documentUsesHalfFloat)
+        val drawing = checkNotNull(newLayer("Слой 1", documentUsesHalfFloat))
         layers += drawing
         activeLayerId = drawing.id
     }
 
-    fun addLayer(name: String, insertAt: Int = layers.size): PaintLayer {
+    fun addLayer(name: String, insertAt: Int = layers.size): PaintLayer? {
         check(canvasWidth > 0 && canvasHeight > 0) { "LayerStack has not been created" }
-        val layer = newLayer(name, documentUsesHalfFloat)
+        val layer = newLayer(name, documentUsesHalfFloat) ?: return null
         layers.add(insertAt.coerceIn(0, layers.size), layer)
         activeLayerId = layer.id
+        return layer
+    }
+
+    /** Restores a previously removed layer with its stable document id. */
+    fun restoreLayer(
+        id: Long,
+        name: String,
+        insertAt: Int,
+        visible: Boolean,
+        locked: Boolean,
+        opacity: Float,
+        blendMode: BlendMode,
+        version: Long,
+    ): PaintLayer? {
+        if (findLayerById(id) != null) return null
+        val layer = PaintLayer(id, name)
+        if (!layer.create(checkNotNull(targetOwner), canvasWidth, canvasHeight, documentUsesHalfFloat)) {
+            return null
+        }
+        layer.isVisible = visible
+        layer.isLocked = locked
+        layer.opacity = opacity.coerceIn(0f, 1f)
+        layer.blendMode = blendMode
+        layer.version = version
+        layers.add(insertAt.coerceIn(0, layers.size), layer)
+        nextId = maxOf(nextId, id + 1L)
+        activeLayerId = id
         return layer
     }
 
@@ -95,7 +133,7 @@ class LayerStack {
         if (layer.isLocked) return null
 
         layers.removeAt(index)
-        layer.release()
+        layer.release(checkNotNull(targetOwner))
         if (activeLayerId == id) {
             activeLayerId = layers[index.coerceAtMost(layers.lastIndex)].id
         }
@@ -119,16 +157,23 @@ class LayerStack {
     }
 
     fun release() {
-        layers.forEach(PaintLayer::release)
+        targetOwner?.let { targets -> layers.forEach { it.release(targets) } }
         layers.clear()
         activeLayerId = NO_LAYER
         canvasWidth = 0
         canvasHeight = 0
         documentUsesHalfFloat = false
+        targetOwner = null
     }
 
-    private fun newLayer(name: String, useHalfFloat: Boolean): PaintLayer =
-        PaintLayer(nextId++, name).also { it.create(canvasWidth, canvasHeight, useHalfFloat) }
+    private fun newLayer(name: String, useHalfFloat: Boolean): PaintLayer? {
+        val layer = PaintLayer(nextId, name)
+        if (!layer.create(checkNotNull(targetOwner), canvasWidth, canvasHeight, useHalfFloat)) {
+            return null
+        }
+        nextId++
+        return layer
+    }
 
     private companion object {
         const val NO_LAYER = -1L

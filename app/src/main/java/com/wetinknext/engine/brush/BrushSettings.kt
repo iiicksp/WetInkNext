@@ -9,6 +9,20 @@ enum class BrushRenderMode { STAMP, RIBBON, WET }
 enum class BlendPolicy { NORMAL_BUILDUP, NON_BUILDUP }
 
 @Serializable
+enum class DabFalloff {
+    /** Near-binary edge, only AA fringe softness. Pixel-art and hard stamps. */
+    HARD,
+    /** Cubic smootherstep rolloff. Pencils, charcoal, chalk. */
+    SOFT,
+    /** Gaussian bell curve. Soft round brushes, blending. */
+    GAUSSIAN,
+    /** Inverted cubic buildup toward center. Spray / airbrush. */
+    AIRBRUSH,
+    /** Flat plateau at full coverage until ~85 % radius, then sharp cutoff. Markers, highlighters. */
+    FLAT_MARKER,
+}
+
+@Serializable
 enum class RibbonCap { ROUND, BUTT }
 
 @Serializable
@@ -20,10 +34,13 @@ data class RibbonSettings(
     val taperStartPx: Float = 8f,
     val taperEndPx: Float = 14f,
     val miterLimit: Float = 3f,
+    /** Join used when a miter is parallel, non-finite, or exceeds [miterLimit]. */
+    val miterFallback: RibbonJoin = RibbonJoin.BEVEL,
     val aaWidthPx: Float = 1f,
     val cap: RibbonCap = RibbonCap.ROUND,
     val join: RibbonJoin = RibbonJoin.ROUND,
     val minPointDistancePx: Float = 0.5f,
+    val autoCloseLoop: Boolean = true,
 )
 
 @Serializable
@@ -44,6 +61,7 @@ data class BrushSettings(
     val spacing: Float = 0.16f,
     val spacingUsesDiameter: Boolean = true,
     val hardness: Float = 1f,
+    val falloff: DabFalloff = DabFalloff.SOFT,
     val colorArgb: Long = 0xFF000000L,
     val smoothing: Float = 0f,
     val streamline: Float = 0f,
@@ -53,6 +71,8 @@ data class BrushSettings(
     val pressureToOpacity: Boolean = true,
     val pressureGamma: Float = 1f,
     val minSizeRatio: Float = 0.05f,
+    val emissionUsesTime: Boolean = false,
+    val emissionRateHz: Float = 60f,
     val velocityToSize: Float = 0f,
     val velocityToOpacity: Float = 0f,
     val tiltToSize: Float = 0f,
@@ -76,6 +96,17 @@ data class BrushSettings(
     val ribbon: RibbonSettings = RibbonSettings(),
     val wet: WetSettings = WetSettings(),
 ) {
+    /** Maps the persisted brush policy to the explicit runtime stroke mode. */
+    val strokeRenderMode: StrokeRenderMode
+        get() = when (blendPolicy) {
+            BlendPolicy.NORMAL_BUILDUP -> StrokeRenderMode.NORMAL_BUILDUP
+            BlendPolicy.NON_BUILDUP -> StrokeRenderMode.NON_BUILDUP
+        }
+
+    /** Current engine-supported runtime stroke mode for this brush. */
+    val effectiveStrokeRenderMode: StrokeRenderMode
+        get() = strokeRenderMode
+
     /** Returns a settings copy safe for every engine path. */
     fun resolved(): BrushSettings {
         val safeRadius = baseRadiusPx.coerceIn(0.25f, 4096f)

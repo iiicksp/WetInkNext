@@ -22,4 +22,27 @@ class BrushSettingsTest {
         assertEquals(0.05f, result.pressureGamma, 0.001f)
         assertEquals(1f, result.minSizeRatio, 0.001f)
     }
+
+    @Test
+    fun strokeRenderModeMapsPersistedBlendPolicyExplicitly() {
+        assertEquals(
+            StrokeRenderMode.NORMAL_BUILDUP,
+            BrushSettings(blendPolicy = BlendPolicy.NORMAL_BUILDUP).strokeRenderMode,
+        )
+        assertEquals(
+            StrokeRenderMode.NON_BUILDUP,
+            BrushSettings(blendPolicy = BlendPolicy.NON_BUILDUP).strokeRenderMode,
+        )
+    }
+
+    @Test
+    fun ribbonUsesNonBuildupAfterCoveragePassIsAvailable() {
+        val ribbon = BrushSettings(
+            renderMode = BrushRenderMode.RIBBON,
+            blendPolicy = BlendPolicy.NON_BUILDUP,
+        )
+
+        assertEquals(StrokeRenderMode.NON_BUILDUP, ribbon.strokeRenderMode)
+        assertEquals(StrokeRenderMode.NON_BUILDUP, ribbon.effectiveStrokeRenderMode)
+    }
 }

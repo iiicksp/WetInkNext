@@ -29,6 +29,7 @@ class DabRenderer(private val maxDabs: Int) {
     private var uShapeActive = -1
     private var uReverseShape = -1
     private var uRgbToAlpha = -1
+    private var uFalloffType = -1
 
     private var grainTextureId = 0
     private var grainScale = 1f
@@ -38,6 +39,7 @@ class DabRenderer(private val maxDabs: Int) {
     private var shapeTextureId = 0
     private var reverseShape = false
     private var rgbToAlpha = false
+    private var falloffType = 1 // DabFalloff.SOFT ordinal
 
     private var uploadedDabCount = 0
     private val blendController = BlendController()
@@ -67,8 +69,12 @@ class DabRenderer(private val maxDabs: Int) {
         uShapeActive = GLES30.glGetUniformLocation(currentProgram.id, "uShapeActive")
         uReverseShape = GLES30.glGetUniformLocation(currentProgram.id, "uReverseShape")
         uRgbToAlpha = GLES30.glGetUniformLocation(currentProgram.id, "uRgbToAlpha")
+        uFalloffType = GLES30.glGetUniformLocation(currentProgram.id, "uFalloffType")
 
-        check(uCanvasToClip >= 0 && uColorLinear >= 0 && uStrokeOpacity >= 0 && uCoverageOnly >= 0) { "Dab shader uniforms missing" }
+        check(
+            uCanvasToClip >= 0 && uColorLinear >= 0 && uStrokeOpacity >= 0 &&
+                uCoverageOnly >= 0,
+        ) { "Dab shader uniforms missing" }
 
         val quad = floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)
         val quadData = ByteBuffer.allocateDirect(quad.size * Float.SIZE_BYTES)
@@ -106,7 +112,7 @@ class DabRenderer(private val maxDabs: Int) {
         GLES30.glVertexAttribPointer(1, 4, GLES30.GL_FLOAT, false, DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES, 0)
         GLES30.glVertexAttribDivisor(1, 1)
         GLES30.glEnableVertexAttribArray(2)
-        GLES30.glVertexAttribPointer(2, 2, GLES30.GL_FLOAT, false, DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES, 16)
+        GLES30.glVertexAttribPointer(2, 3, GLES30.GL_FLOAT, false, DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES, 16)
         GLES30.glVertexAttribDivisor(2, 1)
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, 0)
         GLES30.glBindVertexArray(0)
@@ -132,6 +138,8 @@ class DabRenderer(private val maxDabs: Int) {
                 target = target,
                 width = width,
                 height = height,
+                documentWidth = width,
+                documentHeight = height,
                 canvasToFbo = canvasToFbo,
                 dabs = dabs,
                 firstDab = 0,
@@ -155,6 +163,7 @@ class DabRenderer(private val maxDabs: Int) {
         shapeTextureId = 0
         reverseShape = false
         rgbToAlpha = false
+        falloffType = 1
         if (instanceBufferId != 0) GLES30.glDeleteBuffers(1, intArrayOf(instanceBufferId), 0)
         if (quadBufferId != 0) GLES30.glDeleteBuffers(1, intArrayOf(quadBufferId), 0)
         if (vaoId != 0) GLES30.glDeleteVertexArrays(1, intArrayOf(vaoId), 0)
@@ -210,6 +219,11 @@ class DabRenderer(private val maxDabs: Int) {
         rgbToAlpha = false
     }
 
+    /** Sets the radial intensity profile for all subsequent dab draws. */
+    fun setFalloff(falloff: DabFalloff) {
+        falloffType = falloff.ordinal
+    }
+
     /**
      * Draws all dabs into a coverage target. The fragment coverage-only path
      * is wired in the next NON_BUILDUP step; keeping upload ownership here
@@ -230,6 +244,8 @@ class DabRenderer(private val maxDabs: Int) {
                 target = target,
                 width = width,
                 height = height,
+                documentWidth = width,
+                documentHeight = height,
                 canvasToFbo = canvasToFbo,
                 dabs = dabs,
                 firstDab = 0,
@@ -264,6 +280,8 @@ class DabRenderer(private val maxDabs: Int) {
                 target = target,
                 width = width,
                 height = height,
+                documentWidth = width,
+                documentHeight = height,
                 canvasToFbo = canvasToFbo,
                 dabs = dabs,
                 firstDab = first,
@@ -279,10 +297,92 @@ class DabRenderer(private val maxDabs: Int) {
         }
     }
 
+    /**
+     * Incremental preview into a screen-sized target. Coordinates and texture
+     * grain remain document-space; only rasterisation uses screen dimensions.
+     */
+    fun drawPendingPreviewInto(
+        target: RenderTarget,
+        previewWidth: Int,
+        previewHeight: Int,
+        documentWidth: Int,
+        documentHeight: Int,
+        canvasToClip: FloatArray,
+        dabs: DabBuffer,
+        colorLinear: FloatArray,
+        blendPolicy: BlendPolicy,
+        strokeOpacity: Float = 1f,
+    ) {
+        val first = uploadedDabCount
+        val count = dabs.count - first
+        if (count <= 0) return
+
+        dabs.prepareForUpload(first, count)
+        try {
+            drawRange(
+                target = target,
+                width = previewWidth,
+                height = previewHeight,
+                documentWidth = documentWidth,
+                documentHeight = documentHeight,
+                canvasToFbo = canvasToClip,
+                dabs = dabs,
+                firstDab = first,
+                count = count,
+                colorLinear = colorLinear,
+                blendPolicy = blendPolicy,
+                strokeOpacity = strokeOpacity,
+                coverageOnly = false,
+            )
+            uploadedDabCount = dabs.count
+        } finally {
+            dabs.finishUpload()
+        }
+    }
+
+    /** Adds only new dabs to a screen-sized NON_BUILDUP union coverage mask. */
+    fun drawPendingCoveragePreviewInto(
+        target: RenderTarget,
+        previewWidth: Int,
+        previewHeight: Int,
+        documentWidth: Int,
+        documentHeight: Int,
+        canvasToClip: FloatArray,
+        dabs: DabBuffer,
+    ) {
+        val first = uploadedDabCount
+        val count = dabs.count - first
+        if (count <= 0) return
+
+        dabs.prepareForUpload(first, count)
+        try {
+            drawRange(
+                target = target,
+                width = previewWidth,
+                height = previewHeight,
+                documentWidth = documentWidth,
+                documentHeight = documentHeight,
+                canvasToFbo = canvasToClip,
+                dabs = dabs,
+                firstDab = first,
+                count = count,
+                colorLinear = ZERO_COLOR,
+                blendPolicy = BlendPolicy.NON_BUILDUP,
+                strokeOpacity = 1f,
+                coverageOnly = true,
+            )
+            uploadedDabCount = dabs.count
+        } finally {
+            dabs.finishUpload()
+        }
+    }
+
     private fun drawRange(
         target: RenderTarget,
         width: Int,
         height: Int,
+        documentWidth: Int,
+        documentHeight: Int,
         canvasToFbo: FloatArray,
         dabs: DabBuffer,
         firstDab: Int,
@@ -313,7 +413,11 @@ class DabRenderer(private val maxDabs: Int) {
         @Suppress("UNUSED_VARIABLE")
         val coveragePass = coverageOnly
 
-        GLES30.glUniform2f(uCanvasSize, width.toFloat(), height.toFloat())
+        GLES30.glUniform2f(
+            uCanvasSize,
+            documentWidth.toFloat(),
+            documentHeight.toFloat(),
+        )
         GLES30.glUniform1i(uGrainActive, if (grainTextureId != 0) 1 else 0)
         GLES30.glUniform1f(uGrainScale, grainScale)
         GLES30.glUniform1i(uGrainCanvasLocked, if (grainCanvasLocked) 1 else 0)
@@ -324,6 +428,7 @@ class DabRenderer(private val maxDabs: Int) {
         GLES30.glUniform1i(uShapeActive, if (shapeTextureId != 0) 1 else 0)
         GLES30.glUniform1i(uReverseShape, if (reverseShape) 1 else 0)
         GLES30.glUniform1i(uRgbToAlpha, if (rgbToAlpha) 1 else 0)
+        GLES30.glUniform1i(uFalloffType, falloffType)
 
         if (grainTextureId != 0) {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
@@ -340,27 +445,18 @@ class DabRenderer(private val maxDabs: Int) {
         GLES30.glBindBuffer(GLES30.GL_ARRAY_BUFFER, instanceBufferId)
         GLES30.glBufferSubData(
             GLES30.GL_ARRAY_BUFFER,
-            firstDab * DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES,
+            0,
             count * DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES,
             dabs.floats,
         )
 
-        // Reset offsets for instancing
+        // DabBuffer has already positioned the source range. Upload it at the
+        // VBO origin, otherwise firstDab is applied twice during a preview.
         GLES30.glVertexAttribPointer(
             1, 4, GLES30.GL_FLOAT, false, DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES, 0
         )
         GLES30.glVertexAttribPointer(
-            2, 2, GLES30.GL_FLOAT, false, DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES, 16
-        )
-
-        // Manual attribute offset for ES 3.0 (since BaseInstance is 3.1+)
-        GLES30.glVertexAttribPointer(
-            1, 4, GLES30.GL_FLOAT, false, DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES,
-            (firstDab * DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES)
-        )
-        GLES30.glVertexAttribPointer(
-            2, 2, GLES30.GL_FLOAT, false, DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES,
-            (firstDab * DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES + 16)
+            2, 3, GLES30.GL_FLOAT, false, DabBuffer.FLOATS_PER_DAB * Float.SIZE_BYTES, 16
         )
 
         GLES30.glDrawArraysInstanced(GLES30.GL_TRIANGLE_STRIP, 0, 4, count)

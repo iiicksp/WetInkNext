@@ -9,4 +9,5 @@ enum class UndoOperationType {
     TILE_EDIT,
     CLEAR_LAYER,
     LAYER_PROPERTIES,
+    REMOVE_LAYER,
 }

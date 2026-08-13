@@ -13,22 +13,28 @@ import com.wetinknext.engine.brush.BrushTexture
 import com.wetinknext.engine.brush.LoadedBrushTexture
 import com.wetinknext.engine.brush.BrushRenderMode
 import com.wetinknext.engine.brush.BlendPolicy
+import com.wetinknext.engine.brush.StrokeRenderMode
 import com.wetinknext.engine.brush.CapsuleEmitter
 import com.wetinknext.engine.brush.CapsuleStrokeRenderer
+import com.wetinknext.engine.brush.RibbonMeshRenderer
 import com.wetinknext.engine.brush.ColorSpaces
 import com.wetinknext.engine.brush.DabBuffer
 import com.wetinknext.engine.brush.DabRenderer
 import com.wetinknext.engine.brush.StampEmitter
+import com.wetinknext.engine.canvas.CanvasBackdropRenderer
 import com.wetinknext.engine.canvas.Compositor
-import com.wetinknext.engine.canvas.LinearPresentRenderer
 import com.wetinknext.engine.canvas.LayerStack
+import com.wetinknext.engine.canvas.LinearTextureBlitter
 import com.wetinknext.engine.canvas.PaintLayer
 import com.wetinknext.engine.canvas.StrokeBlitter
 import com.wetinknext.engine.canvas.NonBuildupStrokeRenderer
+import com.wetinknext.engine.canvas.ScreenPresentRenderer
 import com.wetinknext.engine.gl.CanvasGeometry
+import com.wetinknext.engine.gl.BudgetedTargets
 import com.wetinknext.engine.gl.GlCaps
 import com.wetinknext.engine.gl.GlCheck
 import com.wetinknext.engine.gl.RenderTarget
+import com.wetinknext.engine.gl.RenderTargetBudget
 import com.wetinknext.engine.input.InputAction
 import com.wetinknext.engine.input.InputBatch
 import com.wetinknext.engine.input.InputBatchPool
@@ -39,10 +45,19 @@ import com.wetinknext.engine.thumbnail.ThumbnailBuildResult
 import com.wetinknext.engine.thumbnail.ThumbnailBuildScheduler
 import com.wetinknext.engine.thumbnail.ThumbnailRenderer
 import com.wetinknext.engine.undo.TileSnapshotRestore
+import com.wetinknext.engine.undo.PboReadbackProbe
+import com.wetinknext.engine.undo.DocumentCommand
+import com.wetinknext.engine.undo.LayerPropertiesState
+import com.wetinknext.engine.undo.RemovedLayerState
+import com.wetinknext.engine.undo.UndoEntry
+import com.wetinknext.engine.undo.DeflateTileCompressor
 import com.wetinknext.engine.undo.UndoManager
 import com.wetinknext.engine.undo.UndoOperationType
 import java.io.File
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
@@ -64,6 +79,8 @@ class EngineRenderer(
     private val undoPipeline = UndoCompressionPipeline(
         requestRender = { onInputRenderRequested?.invoke() },
     )
+    /** Serializes persistent tile payloads off the GL thread after a commit. */
+    private var tilePayloadExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private var undoRestoreFailures = 0
     private var glThread: Thread? = null
     /**
@@ -75,7 +92,9 @@ class EngineRenderer(
 
     private var geometry: CanvasGeometry? = null
     private var compositor: Compositor? = null
-    private var presentRenderer: LinearPresentRenderer? = null
+    private var backdropRenderer: CanvasBackdropRenderer? = null
+    private var screenPresentRenderer: ScreenPresentRenderer? = null
+    private var linearTextureBlitter: LinearTextureBlitter? = null
     private val thumbnailCapture = ThumbnailCapture()
     private val layerThumbnailPaths = mutableMapOf<Long, String>()
     /** Last layer version for which a WebP preview was successfully published. */
@@ -93,28 +112,47 @@ class EngineRenderer(
     }
     private var dabRenderer: DabRenderer? = null
     private var capsuleRenderer: CapsuleStrokeRenderer? = null
+    private var ribbonMeshRenderer: RibbonMeshRenderer? = null
     private var grainTexture: BrushTexture? = null
     private var grainPath: String? = null
     private var shapeTexture: BrushTexture? = null
     private var shapePath: String? = null
+    private val gpuBudget = RenderTargetBudget()
+    private val targets = BudgetedTargets(gpuBudget)
     private val strokeTarget = RenderTarget()
+    /** RGBA8 screen-space preview; never used for final document pixels. */
+    private val strokePreviewTarget = RenderTarget()
+    /** Screen-sized union mask for realtime STAMP NON_BUILDUP preview. */
+    private val strokeCoveragePreviewTarget = RenderTarget()
     /** RGBA8 coverage accumulator used by the NON_BUILDUP stroke path. */
     private val strokeCoverageTarget = RenderTarget()
-    /** Canvas-sized premultiplied linear composition, presented only once per frame. */
+    /** Screen-sized linear frame composition. Source layers remain document-sized. */
     private val compositeTarget = RenderTarget()
+    /** Confirmed layers below the active one, cached only for a live stroke preview. */
+    private val lowerCompositeTarget = RenderTarget()
+    /** Confirmed layers above the active one, cached only for a live stroke preview. */
+    private val upperCompositeTarget = RenderTarget()
+    private var strokeCacheEnabled = false
+    private var compositeCacheDirty = true
+    private var cachedPreviewActiveLayerIndex = -1
+    private val cachedPreviewCanvasToClipMatrix = FloatArray(16)
     private val canvasToFboMatrix = FloatArray(16)
+    private val canvasToPreviewMatrix = FloatArray(16)
     private val strokeCommitter = StrokeCommitter(
         strokeTarget = strokeTarget,
         canvasToFbo = canvasToFboMatrix,
         undoPipeline = undoPipeline,
         undoManager = undoManager,
+        requestRender = { onInputRenderRequested?.invoke() },
         onTilesCommitted = { layer, tiles ->
+            invalidateCompositeCache()
             layerTileStore.markDirty(layer.id, tiles)
             documentSession?.markLayerDirty(layer.id)
             publishDirtyTiles()
             markLayerThumbnailDirty(layer.id)
         },
         onLayerCleared = { layer ->
+            invalidateCompositeCache()
             layerTileStore.markLayerCleared(layer.id)
             documentSession?.markLayerDirty(layer.id)
             publishDirtyTiles()
@@ -131,6 +169,12 @@ class EngineRenderer(
     private val inputPool = InputBatchPool(batchCount = 64, maxSamplesPerBatch = 256)
     private val inputQueue = ArrayBlockingQueue<InputBatch>(64)
     private val inputCapturer = StrokeInputCapturer(layerStack.camera, inputPool, inputQueue)
+    private var maxInputQueueDepth = 0
+    private var droppedBatchCountAtLastLog = 0L
+    private var frameStartNanos = 0L
+    private var lastFrameLogNanos = 0L
+    private var frameCounter = 0
+    private var inputBatchesSinceLastFrameLog = 0
     private val undoGestureRequested = AtomicBoolean(false)
     private val redoGestureRequested = AtomicBoolean(false)
     private val resetCameraGestureRequested = AtomicBoolean(false)
@@ -198,6 +242,7 @@ class EngineRenderer(
     private var strokeBlitter: StrokeBlitter? = null
     private var nonBuildupStrokeRenderer: NonBuildupStrokeRenderer? = null
     private var capsulePreviewInitialized = false
+    private var renderedRibbonMeshVersion = -1L
     private var stampPreviewInitialized = false
     private val cancelRequested = AtomicBoolean(false)
 
@@ -248,16 +293,11 @@ class EngineRenderer(
 
     /** These methods are called from GLSurfaceView.queueEvent by the UI layer. */
     fun undo() {
-        if (undoPipeline.pendingCount > 0) return
+        if (undoPipeline.pendingCount > 0 || strokeCommitter.pendingReadbackCount > 0) return
         resetStroke()
         while (true) {
             val entry = undoManager.peekUndo() ?: return
-            val layer = layerStack.findLayerById(entry.layerId)
-            if (layer == null) {
-                undoManager.dropUndo(entry)
-                continue
-            }
-            val restored = TileSnapshotRestore.restore(layer.target, entry.beforeTiles)
+            val restored = undoCommand(entry.command)
             if (!restored) {
                 undoRestoreFailures++
                 publishState()
@@ -267,8 +307,7 @@ class EngineRenderer(
                 publishState()
                 return
             }
-            layer.version++
-            persistRestoredTiles(layer, entry.beforeTiles)
+            invalidateCompositeCache()
             updateProjectDocument { it }
             publishState()
             return
@@ -276,21 +315,11 @@ class EngineRenderer(
     }
 
     fun redo() {
-        if (undoPipeline.pendingCount > 0) return
+        if (undoPipeline.pendingCount > 0 || strokeCommitter.pendingReadbackCount > 0) return
         resetStroke()
         while (true) {
             val entry = undoManager.peekRedo() ?: return
-            val layer = layerStack.findLayerById(entry.layerId)
-            if (layer == null) {
-                undoManager.dropRedo(entry)
-                continue
-            }
-            val restored = if (entry.operation == UndoOperationType.CLEAR_LAYER) {
-                layer.clear()
-                true
-            } else {
-                TileSnapshotRestore.restore(layer.target, entry.afterTiles)
-            }
+            val restored = redoCommand(entry.command)
             if (!restored) {
                 undoRestoreFailures++
                 publishState()
@@ -300,36 +329,146 @@ class EngineRenderer(
                 publishState()
                 return
             }
-            layer.version++
-            if (entry.operation == UndoOperationType.CLEAR_LAYER) {
-                layerTileStore.markLayerCleared(layer.id)
-                documentSession?.markLayerDirty(layer.id)
-                publishDirtyTiles()
-                markLayerThumbnailDirty(layer.id)
-            } else {
-                persistRestoredTiles(layer, entry.afterTiles)
-            }
+            invalidateCompositeCache()
             updateProjectDocument { it }
             publishState()
             return
         }
     }
 
+    private fun undoCommand(command: DocumentCommand): Boolean {
+        return when (command) {
+        is DocumentCommand.TileEdit -> {
+            layerStack.findLayerById(command.layerId)?.let { layer ->
+                TileSnapshotRestore.restore(layer.target, command.beforeTiles).also { restored ->
+                    if (restored) {
+                        layer.version++
+                        persistRestoredTiles(layer, command.beforeTiles)
+                    }
+                }
+            } ?: false
+        }
+
+        is DocumentCommand.LayerProperties -> {
+            val layer = layerStack.findLayerById(command.layerId) ?: return false
+            applyLayerProperties(layer, command.before)
+            true
+        }
+
+        is DocumentCommand.RemoveLayer -> restoreRemovedLayer(command)
+        }
+    }
+
+    private fun redoCommand(command: DocumentCommand): Boolean {
+        return when (command) {
+        is DocumentCommand.TileEdit -> {
+            layerStack.findLayerById(command.layerId)?.let { layer ->
+                val restored = if (command.operation == UndoOperationType.CLEAR_LAYER) {
+                    layer.clear()
+                    layerTileStore.markLayerCleared(layer.id)
+                    documentSession?.markLayerDirty(layer.id)
+                    publishDirtyTiles()
+                    markLayerThumbnailDirty(layer.id)
+                    true
+                } else {
+                    TileSnapshotRestore.restore(layer.target, command.afterTiles)
+                }
+                if (restored) {
+                    layer.version++
+                    if (command.operation != UndoOperationType.CLEAR_LAYER) {
+                        persistRestoredTiles(layer, command.afterTiles)
+                    }
+                }
+                restored
+            } ?: false
+        }
+
+        is DocumentCommand.LayerProperties -> {
+            val layer = layerStack.findLayerById(command.layerId) ?: return false
+            applyLayerProperties(layer, command.after)
+            true
+        }
+
+        is DocumentCommand.RemoveLayer -> removeLayerForRedo(command)
+        }
+    }
+
+    private fun layerProperties(layer: PaintLayer) = LayerPropertiesState(
+        visible = layer.isVisible,
+        locked = layer.isLocked,
+        opacity = layer.opacity,
+        blendMode = layer.blendMode,
+    )
+
+    private fun applyLayerProperties(layer: PaintLayer, state: LayerPropertiesState) {
+        layer.isVisible = state.visible
+        layer.isLocked = state.locked
+        layer.opacity = state.opacity.coerceIn(0f, 1f)
+        layer.blendMode = state.blendMode
+        syncLayerDocument(layer)
+        captureThumbnail(listOf(layer.id))
+    }
+
+    private fun restoreRemovedLayer(command: DocumentCommand.RemoveLayer): Boolean {
+        val state = command.layer
+        val layer = layerStack.restoreLayer(
+            id = command.layerId,
+            name = state.name,
+            insertAt = state.index,
+            visible = state.visible,
+            locked = state.locked,
+            opacity = state.opacity,
+            blendMode = state.blendMode,
+            version = state.version,
+        ) ?: return false
+        if (!TileSnapshotRestore.restore(layer.target, state.tiles)) return false
+        layerStack.setActive(state.activeLayerIdBefore)
+        layerTileStore.markDirty(layer.id, state.tiles.map { tile ->
+            com.wetinknext.engine.undo.RawTileSnapshot(
+                coord = tile.coord,
+                pixelLeft = tile.pixelLeft,
+                pixelTop = tile.pixelTop,
+                pixelWidth = tile.pixelWidth,
+                pixelHeight = tile.pixelHeight,
+                bytesPerPixel = tile.bytesPerPixel,
+                rawBytes = tile.decompress(),
+            )
+        })
+        documentSession?.markLayerDirty(layer.id)
+        publishDirtyTiles()
+        markLayerThumbnailDirty(layer.id)
+        return true
+    }
+
+    private fun removeLayerForRedo(command: DocumentCommand.RemoveLayer): Boolean {
+        val removed = layerStack.removeLayer(command.layerId) ?: return false
+        layerStack.setActive(command.layer.activeLayerIdAfter)
+        layerThumbnailPaths.remove(command.layerId)
+        layerThumbnailVersions.remove(command.layerId)
+        thumbnailScheduler?.removeLayer(command.layerId)
+        return true
+    }
+
     fun setActiveLayer(id: Long): Boolean {
         resetStroke()
         return layerStack.setActive(id).also { changed ->
             if (changed) {
+                invalidateCompositeCache()
                 updateProjectDocument { it.copy(activeLayerId = id) }
                 publishState()
             }
         }
     }
 
-    fun addLayer(): Long = addLayer(nextLayerName())
+    fun addLayer(): Long? = addLayer(nextLayerName())
 
-    fun addLayer(name: String): Long {
+    fun addLayer(name: String): Long? {
         resetStroke()
-        val layer = layerStack.addLayer(name)
+        val layer = layerStack.addLayer(name) ?: run {
+            publishState()
+            return null
+        }
+        invalidateCompositeCache()
         updateProjectDocument { document ->
             document.copy(
                 layers = document.layers + layerDocumentFrom(layer),
@@ -352,7 +491,11 @@ class EngineRenderer(
         val duplicate = layerStack.addLayer(
             name = nextDuplicateLayerName(source.name),
             insertAt = sourceIndex + 1,
-        ).also {
+        ) ?: run {
+            publishState()
+            return null
+        }
+        duplicate.also {
             it.isVisible = source.isVisible
             it.isLocked = false
             it.opacity = source.opacity
@@ -372,6 +515,7 @@ class EngineRenderer(
         )
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
         GlCheck.noError("Duplicate layer")
+        invalidateCompositeCache()
 
         val raw = com.wetinknext.engine.undo.TileSnapshotCapture.capture(
             target = duplicate.target,
@@ -389,10 +533,38 @@ class EngineRenderer(
     fun removeLayer(id: Long): Boolean {
         checkOnGlThread()
         resetStroke()
-        invalidatePendingUndoHistory()
+        val layer = layerStack.findLayerById(id) ?: return false
+        if (layer.isLocked || layerStack.count <= 1) return false
+        val index = layerStack.indexOfLayer(id)
+        val raw = com.wetinknext.engine.undo.TileSnapshotCapture.capture(
+            target = layer.target,
+            bounds = intArrayOf(0, 0, layerStack.canvasWidth, layerStack.canvasHeight),
+        )
+        val command = DocumentCommand.RemoveLayer(
+            layerId = layer.id,
+            layer = RemovedLayerState(
+                index = index,
+                activeLayerIdBefore = layerStack.activeLayerId,
+                activeLayerIdAfter = if (layerStack.activeLayerId == id) {
+                    layerStack.allLayers().getOrNull((index + 1).coerceAtMost(layerStack.count - 1))?.id
+                        ?: layerStack.allLayers().getOrNull(index - 1)?.id
+                        ?: layerStack.activeLayerId
+                } else {
+                    layerStack.activeLayerId
+                },
+                name = layer.name,
+                visible = layer.isVisible,
+                locked = layer.isLocked,
+                opacity = layer.opacity,
+                blendMode = layer.blendMode,
+                version = layer.version,
+                tiles = raw.map { it.compress(DeflateTileCompressor()) },
+            ),
+        )
         val removed = layerStack.removeLayer(id) != null
         if (removed) {
-            undoManager.removeEntriesForLayer(id)
+            invalidateCompositeCache()
+            undoManager.push(UndoEntry(command))
             layerThumbnailPaths.remove(id)
             layerThumbnailVersions.remove(id)
             thumbnailScheduler?.removeLayer(id)
@@ -414,6 +586,7 @@ class EngineRenderer(
         resetStroke()
         val moved = layerStack.moveLayer(id, delta)
         if (moved) {
+            invalidateCompositeCache()
             updateProjectDocument { it }
             captureThumbnail()
             publishState()
@@ -424,7 +597,20 @@ class EngineRenderer(
     fun setLayerVisible(id: Long, visible: Boolean) {
         resetStroke()
         val layer = layerStack.findLayerById(id) ?: return
+        if (layer.isVisible == visible) return
+        val before = layerProperties(layer)
         layer.isVisible = visible
+        undoManager.push(
+            UndoEntry(
+                DocumentCommand.LayerProperties(
+                    layerId = id,
+                    before = before,
+                    after = layerProperties(layer),
+                    tag = "set_layer_visible",
+                ),
+            ),
+        )
+        invalidateCompositeCache()
         syncLayerDocument(layer)
         captureThumbnail()
         publishState()
@@ -432,7 +618,21 @@ class EngineRenderer(
 
     fun setLayerOpacity(id: Long, opacity: Float) {
         val layer = layerStack.findLayerById(id) ?: return
-        layer.opacity = opacity.coerceIn(0f, 1f)
+        val nextOpacity = opacity.coerceIn(0f, 1f)
+        if (layer.opacity == nextOpacity) return
+        val before = layerProperties(layer)
+        layer.opacity = nextOpacity
+        undoManager.push(
+            UndoEntry(
+                DocumentCommand.LayerProperties(
+                    layerId = id,
+                    before = before,
+                    after = layerProperties(layer),
+                    tag = "set_layer_opacity",
+                ),
+            ),
+        )
+        invalidateCompositeCache()
         syncLayerDocument(layer)
         captureThumbnail(listOf(layer.id))
         publishState()
@@ -448,11 +648,11 @@ class EngineRenderer(
             canvasWidth = layerStack.canvasWidth,
             canvasHeight = layerStack.canvasHeight,
         )
-        if (cleared) {
+        if (cleared is StrokeCommitter.CommitResult.Queued) {
             updateProjectDocument { it }
             publishState()
         }
-        return cleared
+        return cleared is StrokeCommitter.CommitResult.Queued
     }
 
     /** Mirrors only the camera view; document pixels and undo history stay unchanged. */
@@ -539,6 +739,7 @@ class EngineRenderer(
         GlCheck.setGlThread(currentThread)
         releaseGlObjects()
         undoPipeline.ensureRunning()
+        ensureTilePayloadExecutor()
         thumbnailScheduler?.ensureRunning()
         val nextCaps = GlCaps.query()
         caps = nextCaps
@@ -547,30 +748,23 @@ class EngineRenderer(
             layerStack = layerStack,
             undoManager = undoManager,
             layerTiles = initialLayerTiles,
-        ).also { it.loadIntoGpu(nextCaps) }
+        ).also { it.loadIntoGpu(nextCaps, targets) }
         if (deferredRestoredLayerThumbnails.isNotEmpty()) {
             val previews = deferredRestoredLayerThumbnails
             deferredRestoredLayerThumbnails = emptyMap()
             installRestoredLayerThumbnails(previews)
         }
-        strokeTarget.create(
-            projectDocument.width,
-            projectDocument.height,
-            nextCaps.supportsHalfFloatColorBuffer,
-        )
+        check(
+            targets.create(
+                target = strokeTarget,
+                label = "strokeTarget",
+                width = projectDocument.width,
+                height = projectDocument.height,
+                preferHalfFloat = nextCaps.supportsHalfFloatColorBuffer,
+            ),
+        ) { "GPU budget cannot fit the document stroke target" }
         strokeTarget.clear(0f, 0f, 0f, 0f)
-        strokeCoverageTarget.create(
-            projectDocument.width,
-            projectDocument.height,
-            preferHalfFloat = false,
-        )
-        strokeCoverageTarget.clear(0f, 0f, 0f, 0f)
-        compositeTarget.create(
-            projectDocument.width,
-            projectDocument.height,
-            nextCaps.supportsHalfFloatColorBuffer,
-        )
-        compositeTarget.clear(0f, 0f, 0f, 0f)
+        PboReadbackProbe.verify(strokeTarget)
         ViewTransform.buildCanvasToFbo(
             projectDocument.width.toFloat(),
             projectDocument.height.toFloat(),
@@ -580,11 +774,15 @@ class EngineRenderer(
             it.create(projectDocument.width, projectDocument.height)
         }
         compositor = Compositor().also { it.create() }
-        presentRenderer = LinearPresentRenderer().also { it.create() }
+        backdropRenderer = CanvasBackdropRenderer().also { it.create() }
+        screenPresentRenderer = ScreenPresentRenderer().also { it.create() }
+        linearTextureBlitter = LinearTextureBlitter().also { it.create() }
+        invalidateCompositeCache()
         dabRenderer = DabRenderer(dabBuffer.capacity).also { it.create() }
         capsuleRenderer = CapsuleStrokeRenderer().also {
             it.create()
         }
+        ribbonMeshRenderer = RibbonMeshRenderer().also { it.create() }
         strokeBlitter = StrokeBlitter().also { it.create() }
         nonBuildupStrokeRenderer = NonBuildupStrokeRenderer().also { it.create() }
         // Build both the gallery preview and the individual layer previews
@@ -599,49 +797,103 @@ class EngineRenderer(
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         screenWidth = width.coerceAtLeast(1)
         screenHeight = height.coerceAtLeast(1)
+        releaseStrokeCaches()
+        targets.release(strokePreviewTarget)
+        targets.release(strokeCoveragePreviewTarget)
+        check(
+            targets.create(
+                target = compositeTarget,
+                label = "compositeTarget",
+                width = screenWidth,
+                height = screenHeight,
+                preferHalfFloat = false,
+            ),
+        ) { "GPU budget cannot fit the screen composite target" }
+        compositeTarget.clear(0f, 0f, 0f, 0f)
+        invalidateCompositeCache()
         GLES30.glViewport(0, 0, screenWidth, screenHeight)
         layerStack.camera.fitCanvas(layerStack.canvasWidth, layerStack.canvasHeight, screenWidth, screenHeight)
         GlCheck.noError("P6 surface changed")
     }
 
     override fun onDrawFrame(gl: GL10?) {
+        frameStartNanos = System.nanoTime()
         if (cancelRequested.compareAndSet(true, false)) resetStroke()
         if (undoGestureRequested.compareAndSet(true, false)) undo()
         if (redoGestureRequested.compareAndSet(true, false)) redo()
         if (resetCameraGestureRequested.compareAndSet(true, false)) resetCamera()
-        drainInput()
+        inputBatchesSinceLastFrameLog += drainInput()
+        if (strokeCommitter.processPendingReadbacks()) publishState()
         if (undoPipeline.process(undoManager)) publishState()
         thumbnailScheduler?.processCompleted()
-        thumbnailScheduler?.buildIfNeeded(layerStack)
+        // Thumbnail capture calls glReadPixels. A pending gallery preview must
+        // never steal a frame from an active brush stroke.
+        if (!strokeActive) thumbnailScheduler?.buildIfNeeded(layerStack)
 
         val frameStrokeBrush = activeStrokeBrush
         if (strokeActive && frameStrokeBrush?.renderMode == BrushRenderMode.RIBBON) {
             renderCapsulePreview(frameStrokeBrush)
-        } else if (strokeActive && frameStrokeBrush?.renderMode == BrushRenderMode.STAMP && dabBuffer.count > 0) {
-            // No longer clearing and drawing everything here, handled incrementally in drainInput
+        } else if (strokeActive && frameStrokeBrush?.renderMode == BrushRenderMode.STAMP) {
+            if (frameStrokeBrush.emissionUsesTime) {
+                val timeEmitted = stampEmitter.advanceTime(System.nanoTime(), dabBuffer)
+                if (timeEmitted > 0) {
+                    drawPendingStampPreview("TIME")
+                }
+                // Keep the render loop going while the pen is held down
+                onInputRenderRequested?.invoke()
+            }
         }
 
-        // All document layers and the active stroke preview blend in linear,
-        // premultiplied RGBA before the one sRGB conversion at presentation.
-        compositeTarget.clear(0f, 0f, 0f, 0f)
-        GLES30.glViewport(0, 0, layerStack.canvasWidth, layerStack.canvasHeight)
-        GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
-        GLES30.glDisable(GLES30.GL_BLEND)
-        val currentGeometry = geometry ?: return
-        val currentCompositor = compositor ?: return
-        val currentPresentRenderer = presentRenderer ?: return
-        currentCompositor.render(
-            destination = compositeTarget,
+        val currentGeometry = geometry ?: run {
+            logFrameIfNeeded()
+            return
+        }
+        val currentCompositor = compositor ?: run {
+            logFrameIfNeeded()
+            return
+        }
+        val currentScreenPresentRenderer = screenPresentRenderer ?: run {
+            logFrameIfNeeded()
+            return
+        }
+
+        layerStack.camera.snapshot().buildCanvasToClip(
+            screenWidth.toFloat(),
+            screenHeight.toFloat(),
+            canvasToClipMatrix,
+        )
+
+        val hasNonBuildupPreview = strokeActive &&
+            frameStrokeBrush?.effectiveStrokeRenderMode == StrokeRenderMode.NON_BUILDUP &&
+            (dabBuffer.count > 0 || capsuleEmitter.hasStroke)
+        val previewTextureId = if (
+            strokeActive &&
+            !hasNonBuildupPreview &&
+            strokePreviewTarget.textureId != 0 &&
+            (dabBuffer.count > 0 ||
+                (frameStrokeBrush?.renderMode == BrushRenderMode.RIBBON && capsuleEmitter.hasStroke))
+        ) {
+            strokePreviewTarget.textureId
+        } else {
+            0
+        }
+        renderDocumentComposite(
+            compositor = currentCompositor,
             geometry = currentGeometry,
-            layers = layerStack,
-            activeLayerId = layerStack.activeLayerId,
-            strokeTextureId = if (
-                strokeActive &&
-                (dabBuffer.count > 0 || (frameStrokeBrush?.renderMode == BrushRenderMode.RIBBON && capsuleEmitter.hasStroke))
-            ) strokeTarget.textureId else 0,
-            strokeErase = activeStrokeErase,
+            previewTextureId = previewTextureId,
+            previewCoverageTextureId = if (
+                hasNonBuildupPreview && strokeCoveragePreviewTarget.textureId != 0
+            ) {
+                strokeCoveragePreviewTarget.textureId
+            } else {
+                0
+            },
+            previewMode = if (hasNonBuildupPreview) {
+                StrokeRenderMode.NON_BUILDUP
+            } else {
+                StrokeRenderMode.NORMAL_BUILDUP
+            },
             strokeOpacity = frameStrokeBrush?.opacity?.coerceIn(0f, 1f) ?: 1f,
-            canvasToClip = canvasToFboMatrix,
         )
 
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
@@ -651,62 +903,242 @@ class EngineRenderer(
         GLES30.glClearColor(canvasBackdropColor[0], canvasBackdropColor[1], canvasBackdropColor[2], 1f)
         GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
         drawBackdropPattern()
-        layerStack.camera.snapshot().buildCanvasToClip(
-            screenWidth.toFloat(),
-            screenHeight.toFloat(),
-            canvasToClipMatrix,
-        )
-        // Explicitly restore the default framebuffer before the final sRGB pass.
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-        currentPresentRenderer.render(
-            geometry = currentGeometry,
+        currentScreenPresentRenderer.render(
             sourceTextureId = compositeTarget.textureId,
-            canvasToClipMatrix = canvasToClipMatrix,
-            canvasWidth = layerStack.canvasWidth,
-            canvasHeight = layerStack.canvasHeight,
             viewportWidth = screenWidth,
             viewportHeight = screenHeight,
         )
+        logFrameIfNeeded()
+    }
+
+    /**
+     * During a live stroke, the confirmed layers above and below the active
+     * layer do not change. Cache those two screen-space composites and redraw
+     * only the active layer plus its preview on MOVE. This preserves layer
+     * ordering for both paint and eraser previews.
+     */
+    private fun renderDocumentComposite(
+        compositor: Compositor,
+        geometry: CanvasGeometry,
+        previewTextureId: Int,
+        previewCoverageTextureId: Int,
+        previewMode: StrokeRenderMode,
+        strokeOpacity: Float,
+    ) {
+        val activeLayerIndex = layerStack.indexOfLayer(layerStack.activeLayerId)
+        val textureBlitter = linearTextureBlitter
+        val canUseStrokeCache = strokeActive &&
+            strokeCacheEnabled &&
+            textureBlitter != null &&
+            activeLayerIndex in 0 until layerStack.count &&
+            lowerCompositeTarget.textureId != 0 &&
+            upperCompositeTarget.textureId != 0
+
+        if (!canUseStrokeCache) {
+            compositeTarget.clear(0f, 0f, 0f, 0f)
+            GLES30.glViewport(0, 0, screenWidth, screenHeight)
+            GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+            GLES30.glDisable(GLES30.GL_BLEND)
+            compositor.render(
+                destination = compositeTarget,
+                geometry = geometry,
+                layers = layerStack,
+                activeLayerId = layerStack.activeLayerId,
+                strokeTextureId = previewTextureId,
+                strokeCoverageTextureId = previewCoverageTextureId,
+                strokeIsScreenSpace = previewTextureId != 0 || previewCoverageTextureId != 0,
+                strokeMode = previewMode,
+                strokeErase = activeStrokeErase,
+                strokeColorLinear = activeStrokeColorLinear,
+                strokeOpacity = strokeOpacity,
+                canvasToClip = canvasToClipMatrix,
+            )
+            return
+        }
+
+        rebuildPreviewCompositeCachesIfNeeded(
+            compositor = compositor,
+            geometry = geometry,
+            activeLayerIndex = activeLayerIndex,
+        )
+
+        compositeTarget.clear(0f, 0f, 0f, 0f)
+        compositeTarget.bind()
+        GLES30.glViewport(0, 0, screenWidth, screenHeight)
+        GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+        GLES30.glDisable(GLES30.GL_BLEND)
+        if (activeLayerIndex > 0) {
+            textureBlitter.blit(lowerCompositeTarget.textureId)
+        }
+        compositor.render(
+            destination = compositeTarget,
+            geometry = geometry,
+            layers = layerStack,
+            activeLayerId = layerStack.activeLayerId,
+            strokeTextureId = previewTextureId,
+            strokeCoverageTextureId = previewCoverageTextureId,
+            strokeIsScreenSpace = previewTextureId != 0 || previewCoverageTextureId != 0,
+            strokeMode = previewMode,
+            strokeErase = activeStrokeErase,
+            strokeColorLinear = activeStrokeColorLinear,
+            strokeOpacity = strokeOpacity,
+            canvasToClip = canvasToClipMatrix,
+            firstLayerIndex = activeLayerIndex,
+            lastLayerExclusive = activeLayerIndex + 1,
+        )
+        if (activeLayerIndex < layerStack.count - 1) {
+            textureBlitter.blit(upperCompositeTarget.textureId)
+        }
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+    }
+
+    private fun rebuildPreviewCompositeCachesIfNeeded(
+        compositor: Compositor,
+        geometry: CanvasGeometry,
+        activeLayerIndex: Int,
+    ) {
+        val cameraChanged = !canvasToClipMatrix.contentEquals(cachedPreviewCanvasToClipMatrix)
+        if (!compositeCacheDirty &&
+            cachedPreviewActiveLayerIndex == activeLayerIndex &&
+            !cameraChanged
+        ) {
+            return
+        }
+
+        lowerCompositeTarget.clear(0f, 0f, 0f, 0f)
+        GLES30.glViewport(0, 0, screenWidth, screenHeight)
+        compositor.render(
+            destination = lowerCompositeTarget,
+            geometry = geometry,
+            layers = layerStack,
+            activeLayerId = -1L,
+            strokeTextureId = 0,
+            strokeErase = false,
+            strokeOpacity = 1f,
+            canvasToClip = canvasToClipMatrix,
+            firstLayerIndex = 0,
+            lastLayerExclusive = activeLayerIndex,
+        )
+
+        upperCompositeTarget.clear(0f, 0f, 0f, 0f)
+        GLES30.glViewport(0, 0, screenWidth, screenHeight)
+        compositor.render(
+            destination = upperCompositeTarget,
+            geometry = geometry,
+            layers = layerStack,
+            activeLayerId = -1L,
+            strokeTextureId = 0,
+            strokeErase = false,
+            strokeOpacity = 1f,
+            canvasToClip = canvasToClipMatrix,
+            firstLayerIndex = activeLayerIndex + 1,
+            lastLayerExclusive = layerStack.count,
+        )
+
+        canvasToClipMatrix.copyInto(cachedPreviewCanvasToClipMatrix)
+        cachedPreviewActiveLayerIndex = activeLayerIndex
+        compositeCacheDirty = false
+    }
+
+    private fun invalidateCompositeCache() {
+        compositeCacheDirty = true
+        cachedPreviewActiveLayerIndex = -1
+    }
+
+    /** Optional screen-space caches: failure falls back to full compositing. */
+    private fun ensureStrokeCaches(): Boolean {
+        if (strokeCacheEnabled) return true
+
+        val lowerCreated = targets.create(
+            target = lowerCompositeTarget,
+            label = "lowerComposite",
+            width = screenWidth,
+            height = screenHeight,
+            preferHalfFloat = false,
+        )
+        val upperCreated = lowerCreated && targets.create(
+            target = upperCompositeTarget,
+            label = "upperComposite",
+            width = screenWidth,
+            height = screenHeight,
+            preferHalfFloat = false,
+        )
+        if (!upperCreated) {
+            targets.release(lowerCompositeTarget)
+            targets.release(upperCompositeTarget)
+            strokeCacheEnabled = false
+            if (BuildConfig.DEBUG) {
+                Log.w(FRAME_DIAG_TAG, "stroke cache disabled: GPU budget")
+            }
+            return false
+        }
+
+        lowerCompositeTarget.clear(0f, 0f, 0f, 0f)
+        upperCompositeTarget.clear(0f, 0f, 0f, 0f)
+        strokeCacheEnabled = true
+        invalidateCompositeCache()
+        return true
+    }
+
+    private fun releaseStrokeCaches() {
+        targets.release(lowerCompositeTarget)
+        targets.release(upperCompositeTarget)
+        strokeCacheEnabled = false
+        invalidateCompositeCache()
+    }
+
+    /** Optional preview target; a failure affects only realtime preview, not commit. */
+    private fun ensurePreviewTarget(nonBuildup: Boolean): Boolean {
+        val target = if (nonBuildup) strokeCoveragePreviewTarget else strokePreviewTarget
+        val label = if (nonBuildup) "coveragePreview" else "strokePreview"
+        if (target.textureId != 0) {
+            target.clear(0f, 0f, 0f, 0f)
+            return true
+        }
+
+        val created = targets.create(
+            target = target,
+            label = label,
+            width = screenWidth,
+            height = screenHeight,
+            preferHalfFloat = false,
+        )
+        if (created) {
+            target.clear(0f, 0f, 0f, 0f)
+        }
+        return created
+    }
+
+    /** Required only at NON_BUILDUP commit; omitted while the user is drawing. */
+    private fun ensureCoverageTarget(): Boolean {
+        if (strokeCoverageTarget.textureId != 0) return true
+        fun createCoverage() = targets.create(
+            target = strokeCoverageTarget,
+            label = "strokeCoverage",
+            width = layerStack.canvasWidth,
+            height = layerStack.canvasHeight,
+            preferHalfFloat = false,
+        )
+
+        if (createCoverage()) return true
+        // A commit is more important than a live-composite optimisation.
+        releaseStrokeCaches()
+        return createCoverage()
     }
 
     private fun drawBackdropPattern() {
-        if (canvasBackdropMode == CanvasBackdropMode.SOLID) return
-        val cellPx = 28
-        GLES30.glEnable(GLES30.GL_SCISSOR_TEST)
-        GLES30.glClearColor(canvasGridColor[0], canvasGridColor[1], canvasGridColor[2], 1f)
-        if (canvasBackdropMode == CanvasBackdropMode.CHECKERBOARD) {
-            var row = 0
-            var y = 0
-            while (y < screenHeight) {
-                var column = row and 1
-                var x = 0
-                while (x < screenWidth) {
-                    if (column == 0) {
-                        GLES30.glScissor(x, y, cellPx, cellPx)
-                        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-                    }
-                    column = 1 - column
-                    x += cellPx
-                }
-                row++
-                y += cellPx
-            }
-            GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
-            return
+        val mode = when (canvasBackdropMode) {
+            CanvasBackdropMode.SOLID -> return
+            CanvasBackdropMode.GRID -> CanvasBackdropRenderer.MODE_GRID
+            CanvasBackdropMode.CHECKERBOARD -> CanvasBackdropRenderer.MODE_CHECKERBOARD
         }
-        var x = 0
-        while (x < screenWidth) {
-            GLES30.glScissor(x, 0, 1, screenHeight)
-            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-            x += cellPx
-        }
-        var y = 0
-        while (y < screenHeight) {
-            GLES30.glScissor(0, y, screenWidth, 1)
-            GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
-            y += cellPx
-        }
-        GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+        backdropRenderer?.render(
+            viewportWidth = screenWidth,
+            viewportHeight = screenHeight,
+            backgroundColor = canvasBackdropColor,
+            gridColor = canvasGridColor,
+            mode = mode,
+        )
     }
 
     private fun argbToRgb(argb: Int, out: FloatArray) {
@@ -725,6 +1157,16 @@ class EngineRenderer(
         undoPipeline.shutdown()
     }
 
+    private fun ensureTilePayloadExecutor() {
+        if (tilePayloadExecutor.isShutdown) {
+            tilePayloadExecutor = Executors.newSingleThreadExecutor()
+        }
+    }
+
+    private fun shutdownTilePayloadExecutor() {
+        tilePayloadExecutor.shutdownNow()
+    }
+
     /** Safe to call from the UI thread; cancellation is executed on the next GL frame. */
     fun cancelActiveStroke() {
         cancelRequested.set(true)
@@ -736,8 +1178,10 @@ class EngineRenderer(
         invalidatePendingUndoHistory()
         discardPendingInput()
         resetStroke()
+        strokeCommitter.releaseReadbacks()
         undoManager.clear()
         shutdownUndoExecutor()
+        shutdownTilePayloadExecutor()
         dabRenderer?.release()
         dabRenderer = null
         grainTexture?.release()
@@ -748,29 +1192,39 @@ class EngineRenderer(
         shapePath = null
         capsuleRenderer?.release()
         capsuleRenderer = null
+        ribbonMeshRenderer?.release()
+        ribbonMeshRenderer = null
         strokeBlitter?.release()
         strokeBlitter = null
         nonBuildupStrokeRenderer?.release()
         nonBuildupStrokeRenderer = null
         compositor?.release()
         compositor = null
-        presentRenderer?.release()
-        presentRenderer = null
+        backdropRenderer?.release()
+        backdropRenderer = null
+        screenPresentRenderer?.release()
+        screenPresentRenderer = null
+        linearTextureBlitter?.release()
+        linearTextureBlitter = null
         thumbnailScheduler?.shutdown()
         thumbnailCapture.release()
         documentSession = null
         geometry?.release()
         geometry = null
-        strokeTarget.release()
-        strokeCoverageTarget.release()
-        compositeTarget.release()
+        targets.releaseAll()
+        gpuBudget.reset()
         layerStack.release()
         caps = null
     }
 
-    private fun drainInput() {
-        while (true) {
-            val batch = inputQueue.poll() ?: return
+    private fun drainInput(): Int {
+        var processedBatches = 0
+        val startedAtNanos = System.nanoTime()
+        while (
+            processedBatches < MAX_INPUT_BATCHES_PER_FRAME &&
+            System.nanoTime() - startedAtNanos < MAX_INPUT_PROCESS_NANOS
+        ) {
+            val batch = inputQueue.poll() ?: break
             try {
                 when (batch.action) {
                     InputAction.DOWN -> {
@@ -782,6 +1236,10 @@ class EngineRenderer(
                             activeStrokeColorLinear.copyInto(strokeColorLinear)
                             activeStrokeErase = eraserEnabled
                             strokeActive = true
+                            val previewAllocated = ensurePreviewTarget(
+                                strokeBrush.effectiveStrokeRenderMode == StrokeRenderMode.NON_BUILDUP,
+                            )
+                            ensureStrokeCaches()
 
                             if (strokeBrush.renderMode == BrushRenderMode.RIBBON) {
                                 capsuleEmitter.begin(
@@ -790,12 +1248,14 @@ class EngineRenderer(
                                     strokeSettings = strokeBrush,
                                 )
                             } else {
-                                dabRenderer?.beginStroke()
+                                dabRenderer?.apply {
+                                    beginStroke()
+                                    setFalloff(strokeBrush.falloff)
+                                }
                                 stampEmitter.begin(batch, dabBuffer, strokeBrush)
-                                strokeTarget.clear(0f, 0f, 0f, 0f)
-                                stampPreviewInitialized = true
+                                stampPreviewInitialized = previewAllocated
 
-                                drawPendingStampPreview("DOWN")
+                                if (previewAllocated) drawPendingStampPreview("DOWN")
                             }
                         }
                     }
@@ -845,7 +1305,46 @@ class EngineRenderer(
             } finally {
                 inputPool.release(batch)
             }
+            processedBatches++
         }
+
+        val queueDepth = inputQueue.size
+        if (queueDepth > maxInputQueueDepth) maxInputQueueDepth = queueDepth
+        if (BuildConfig.DEBUG && inputCapturer.droppedBatches != droppedBatchCountAtLastLog) {
+            droppedBatchCountAtLastLog = inputCapturer.droppedBatches
+            Log.w(
+                INPUT_LATENCY_TAG,
+                "queue=$queueDepth max=$maxInputQueueDepth dropped=${inputCapturer.droppedBatches}",
+            )
+        }
+
+        // Keep a continuation frame scheduled, but never let a delayed input
+        // backlog monopolise the GL thread and visibly freeze the canvas.
+        if (inputQueue.isNotEmpty()) {
+            onInputRenderRequested?.invoke()
+        }
+        return processedBatches
+    }
+
+    /** Debug-only aggregate; never writes Logcat from the MOVE hot path. */
+    private fun logFrameIfNeeded() {
+        frameCounter++
+        if (!BuildConfig.DEBUG ||
+            frameStartNanos - lastFrameLogNanos < FRAME_LOG_INTERVAL_NANOS
+        ) {
+            return
+        }
+
+        val frameMs = (System.nanoTime() - frameStartNanos) / 1_000_000f
+        Log.d(
+            FRAME_DIAG_TAG,
+            "frameMs=$frameMs queue=${inputQueue.size} frames=$frameCounter " +
+                "inputBatches=$inputBatchesSinceLastFrameLog dabs=${dabBuffer.count} " +
+                "undoPending=${undoPipeline.pendingCount}",
+        )
+        lastFrameLogNanos = frameStartNanos
+        frameCounter = 0
+        inputBatchesSinceLastFrameLog = 0
     }
 
     private fun commitStroke(strokeBrush: BrushSettings) {
@@ -855,21 +1354,11 @@ class EngineRenderer(
         val blitter = strokeBlitter ?: return
         val strokeGeometry = geometry ?: return
 
-        if (strokeBrush.blendPolicy == BlendPolicy.NON_BUILDUP) {
+        if (strokeBrush.effectiveStrokeRenderMode == StrokeRenderMode.NON_BUILDUP) {
             val renderer = dabRenderer ?: return
             val nonBuildupBlitter = nonBuildupStrokeRenderer ?: return
-            strokeTarget.clear(0f, 0f, 0f, 0f)
+            if (!ensureCoverageTarget()) return
             strokeCoverageTarget.clear(0f, 0f, 0f, 0f)
-            renderer.drawInto(
-                target = strokeTarget,
-                width = layerStack.canvasWidth,
-                height = layerStack.canvasHeight,
-                canvasToFbo = canvasToFboMatrix,
-                dabs = dabBuffer,
-                colorLinear = activeStrokeColorLinear,
-                blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-                strokeOpacity = 1f,
-            )
             renderer.drawCoverageInto(
                 target = strokeCoverageTarget,
                 width = layerStack.canvasWidth,
@@ -882,20 +1371,32 @@ class EngineRenderer(
                 geometry = strokeGeometry,
                 blitter = nonBuildupBlitter,
                 coverageTarget = strokeCoverageTarget,
+                colorLinear = activeStrokeColorLinear,
                 dirtyBounds = dirtyBounds,
                 canvasWidth = layerStack.canvasWidth,
                 canvasHeight = layerStack.canvasHeight,
                 opacity = strokeBrush.opacity,
                 erase = activeStrokeErase,
-            )) {
+            ) is StrokeCommitter.CommitResult.Queued) {
                 publishState()
             }
             return
         }
 
-        // Complete the isolated local-coverage mask before it is composited.
-        // Global brush opacity is deliberately applied only by the blit.
-        drawPendingStampPreview("UP")
+        // Preview is screen-sized. Rebuild the document-sized target once on
+        // UP, then commit those exact pixels to the active layer.
+        strokeTarget.clear(0f, 0f, 0f, 0f)
+        val renderer = dabRenderer ?: return
+        renderer.drawInto(
+            target = strokeTarget,
+            width = layerStack.canvasWidth,
+            height = layerStack.canvasHeight,
+            canvasToFbo = canvasToFboMatrix,
+            dabs = dabBuffer,
+            colorLinear = activeStrokeColorLinear,
+            blendPolicy = strokeBrush.blendPolicy,
+            strokeOpacity = 1f,
+        )
 
         if (strokeCommitter.commit(
             layer = layer,
@@ -906,7 +1407,7 @@ class EngineRenderer(
             canvasHeight = layerStack.canvasHeight,
             opacity = strokeBrush.opacity,
             erase = activeStrokeErase,
-        )) {
+        ) is StrokeCommitter.CommitResult.Queued) {
             publishState()
         }
     }
@@ -928,25 +1429,52 @@ class EngineRenderer(
         val renderer = dabRenderer ?: return
         val strokeBrush = activeStrokeBrush
             ?: error("Missing active stroke snapshot")
+        val previewTarget = if (
+            strokeBrush.effectiveStrokeRenderMode == StrokeRenderMode.NON_BUILDUP
+        ) {
+            strokeCoveragePreviewTarget
+        } else {
+            strokePreviewTarget
+        }
+        if (previewTarget.textureId == 0) return
         check(renderer.uploadedCount <= dabBuffer.count) {
             "Stamp preview rewound: uploaded=${renderer.uploadedCount}, dabs=${dabBuffer.count}"
         }
-        if (BuildConfig.DEBUG) {
+        if (LOG_STAMP_PREVIEW && BuildConfig.DEBUG) {
             Log.d(
                 BRUSH_DIAG_TAG,
                 "phase=$phase dabs=${dabBuffer.count} pending=${dabBuffer.count - renderer.uploadedCount}",
             )
         }
-        renderer.drawPendingInto(
-            target = strokeTarget,
-            width = layerStack.canvasWidth,
-            height = layerStack.canvasHeight,
-            canvasToFbo = canvasToFboMatrix,
-            dabs = dabBuffer,
-            colorLinear = activeStrokeColorLinear,
-            blendPolicy = strokeBrush.blendPolicy,
-            strokeOpacity = 1f,
+        layerStack.camera.snapshot().buildCanvasToClip(
+            screenWidth.toFloat(),
+            screenHeight.toFloat(),
+            canvasToPreviewMatrix,
         )
+        if (strokeBrush.effectiveStrokeRenderMode == StrokeRenderMode.NON_BUILDUP) {
+            renderer.drawPendingCoveragePreviewInto(
+                target = strokeCoveragePreviewTarget,
+                previewWidth = screenWidth,
+                previewHeight = screenHeight,
+                documentWidth = layerStack.canvasWidth,
+                documentHeight = layerStack.canvasHeight,
+                canvasToClip = canvasToPreviewMatrix,
+                dabs = dabBuffer,
+            )
+        } else {
+            renderer.drawPendingPreviewInto(
+                target = strokePreviewTarget,
+                previewWidth = screenWidth,
+                previewHeight = screenHeight,
+                documentWidth = layerStack.canvasWidth,
+                documentHeight = layerStack.canvasHeight,
+                canvasToClip = canvasToPreviewMatrix,
+                dabs = dabBuffer,
+                colorLinear = activeStrokeColorLinear,
+                blendPolicy = BlendPolicy.NORMAL_BUILDUP,
+                strokeOpacity = 1f,
+            )
+        }
         check(renderer.uploadedCount == dabBuffer.count) {
             "Stamp preview did not consume all dabs: uploaded=${renderer.uploadedCount}, dabs=${dabBuffer.count}"
         }
@@ -961,14 +1489,16 @@ class EngineRenderer(
         capsuleEmitter.reset()
         capsuleRenderer?.clearStrokeData()
         capsulePreviewInitialized = false
+        renderedRibbonMeshVersion = -1L
         stampPreviewInitialized = false
         dabRenderer?.clearStrokeData()
         if (strokeTarget.framebufferId != 0) {
             strokeTarget.clear(0f, 0f, 0f, 0f)
         }
-        if (strokeCoverageTarget.framebufferId != 0) {
-            strokeCoverageTarget.clear(0f, 0f, 0f, 0f)
-        }
+        releaseStrokeCaches()
+        targets.release(strokePreviewTarget)
+        targets.release(strokeCoveragePreviewTarget)
+        targets.release(strokeCoverageTarget)
     }
 
     /** Releases pooled batches without interpreting them during shutdown/context recreation. */
@@ -1009,9 +1539,26 @@ class EngineRenderer(
     private fun publishDirtyTiles() {
         val dirty = layerTileStore.takeDirty()
         if (dirty.isEmpty()) return
-        projectDocument = buildDocumentSnapshot()
+        val documentSnapshot = buildDocumentSnapshot()
+        projectDocument = documentSnapshot
         documentSession?.markProjectDirty()
-        onDirtyLayerTiles?.invoke(projectDocument, layerTileStore.payloadsForDirty(dirty), dirty)
+        // PersistentLayerTiles.encode() can copy tens of MB for a mature 4K
+        // layer. Never do that allocation while the GL thread is responsible
+        // for accepting stylus input and drawing the next preview frame.
+        try {
+            tilePayloadExecutor.execute {
+                val payloads = runCatching {
+                    layerTileStore.payloadsForDirty(dirty)
+                }.getOrElse { error ->
+                    if (BuildConfig.DEBUG) Log.e("TilePersistence", "Tile payload encoding failed", error)
+                    return@execute
+                }
+                onDirtyLayerTiles?.invoke(documentSnapshot, payloads, dirty)
+            }
+        } catch (_: RejectedExecutionException) {
+            // Context release cancelled a stale save. The next active session
+            // will retain its dirty tiles and schedule a fresh publication.
+        }
     }
 
     /** Re-captures restored GPU tiles so Undo/Redo is persisted like a stroke. */
@@ -1034,6 +1581,9 @@ class EngineRenderer(
     }
 
     private fun captureThumbnail(dirtyLayerIds: Collection<Long> = emptyList()) {
+        // Thumbnail capture performs glReadPixels. Preview must never queue it
+        // while a stylus stroke owns the GL frame budget.
+        if (strokeActive) return
         if (caps == null || geometry == null || compositor == null) return
         val scheduler = thumbnailScheduler
         if (scheduler != null) {
@@ -1156,14 +1706,14 @@ class EngineRenderer(
                             ?: 0L,
                     )
                 },
-                canUndo = undoManager.canUndo && undoPipeline.pendingCount == 0,
-                canRedo = undoManager.canRedo && undoPipeline.pendingCount == 0,
+                canUndo = undoManager.canUndo && undoPipeline.pendingCount == 0 && strokeCommitter.pendingReadbackCount == 0,
+                canRedo = undoManager.canRedo && undoPipeline.pendingCount == 0 && strokeCommitter.pendingReadbackCount == 0,
                 brushSizePx = brushSettings.baseRadiusPx * 2f,
                 brushOpacity = brushSettings.opacity,
                 activeLayerId = activeLayerId,
                 ready = layerStack.canvasWidth > 0 && layerStack.canvasHeight > 0,
                 undoDiagnostics = UndoDiagnostics(
-                    pendingJobs = undoPipeline.pendingCount,
+                    pendingJobs = undoPipeline.pendingCount + strokeCommitter.pendingReadbackCount,
                     staleResults = undoPipeline.staleResultCount,
                     compressionFailures = undoPipeline.compressionFailureCount,
                     restoreFailures = undoRestoreFailures,
@@ -1269,38 +1819,97 @@ class EngineRenderer(
     }
 
     private fun renderCapsulePreview(strokeBrush: BrushSettings) {
-        val renderer = capsuleRenderer ?: return
+        val renderer = ribbonMeshRenderer ?: return
+        if (renderedRibbonMeshVersion == capsuleEmitter.ribbonMeshVersion) return
+        val mesh = capsuleEmitter.buildRibbonMesh() ?: return
 
-        if (!capsulePreviewInitialized) {
-            strokeTarget.clear(
-                red = 0f,
-                green = 0f,
-                blue = 0f,
-                alpha = 0f,
-            )
-            capsulePreviewInitialized = true
-        }
+        // A geometric mesh is redrawn as a whole. Clearing avoids building up
+        // the same triangles on every display frame.
+        val previewTarget = if (strokeBrush.effectiveStrokeRenderMode == StrokeRenderMode.NON_BUILDUP) {
+            strokeCoveragePreviewTarget
+        } else strokePreviewTarget
+        if (previewTarget.textureId == 0) return
+        previewTarget.clear(0f, 0f, 0f, 0f)
+        capsulePreviewInitialized = true
+        renderedRibbonMeshVersion = capsuleEmitter.ribbonMeshVersion
 
-        renderer.drawPending(
-            target = strokeTarget,
-            width = layerStack.canvasWidth,
-            height = layerStack.canvasHeight,
-            canvasToClip = canvasToFboMatrix,
-            colorLinear = activeStrokeColorLinear,
-            blendPolicy = strokeBrush.blendPolicy,
-            flow = strokeBrush.flow,
+        layerStack.camera.snapshot().buildCanvasToClip(
+            screenWidth.toFloat(),
+            screenHeight.toFloat(),
+            canvasToPreviewMatrix,
         )
+        if (strokeBrush.effectiveStrokeRenderMode == StrokeRenderMode.NON_BUILDUP) {
+            renderer.draw(
+                target = strokeCoveragePreviewTarget,
+                width = screenWidth,
+                height = screenHeight,
+                matrix = canvasToPreviewMatrix,
+                mesh = mesh,
+                color = activeStrokeColorLinear,
+                flow = strokeBrush.flow,
+                coverageOnly = true,
+            )
+        } else {
+            renderer.draw(
+                target = strokePreviewTarget,
+                width = screenWidth,
+                height = screenHeight,
+                matrix = canvasToPreviewMatrix,
+                mesh = mesh,
+                color = activeStrokeColorLinear,
+                flow = strokeBrush.flow,
+                coverageOnly = false,
+            )
+        }
     }
 
     private fun commitCapsuleStroke(strokeBrush: BrushSettings) {
         val layer = layerStack.activeLayer() ?: return
-        val renderer = capsuleRenderer ?: return
+        val renderer = ribbonMeshRenderer ?: return
+        val mesh = capsuleEmitter.buildRibbonMesh() ?: return
 
         if (layer.isLocked) return
         if (!capsuleEmitter.hasStroke) return
         if (!computeCapsuleDirtyBounds(dirtyBounds)) return
         val blitter = strokeBlitter ?: return
         val strokeGeometry = geometry ?: return
+
+        if (strokeBrush.effectiveStrokeRenderMode == StrokeRenderMode.NON_BUILDUP) {
+            val nonBuildupBlitter = nonBuildupStrokeRenderer ?: return
+            if (!ensureCoverageTarget()) return
+            strokeCoverageTarget.clear(0f, 0f, 0f, 0f)
+            val drawn = renderer.draw(
+                target = strokeCoverageTarget,
+                width = layerStack.canvasWidth,
+                height = layerStack.canvasHeight,
+                matrix = canvasToFboMatrix,
+                mesh = mesh,
+                color = activeStrokeColorLinear,
+                flow = strokeBrush.flow,
+                coverageOnly = true,
+            )
+            if (!drawn) {
+                if (BuildConfig.DEBUG) {
+                    Log.w(FRAME_DIAG_TAG, "ribbon commit skipped: mesh over limit")
+                }
+                return
+            }
+            if (strokeCommitter.commitNonBuildup(
+                layer = layer,
+                geometry = strokeGeometry,
+                blitter = nonBuildupBlitter,
+                coverageTarget = strokeCoverageTarget,
+                colorLinear = activeStrokeColorLinear,
+                dirtyBounds = dirtyBounds,
+                canvasWidth = layerStack.canvasWidth,
+                canvasHeight = layerStack.canvasHeight,
+                opacity = strokeBrush.opacity,
+                erase = activeStrokeErase,
+            ) is StrokeCommitter.CommitResult.Queued) {
+                publishState()
+            }
+            return
+        }
 
         /*
          * Сначала строим stroke в отдельном offscreen target.
@@ -1313,15 +1922,22 @@ class EngineRenderer(
             alpha = 0f,
         )
 
-        renderer.drawAll(
+        val drawn = renderer.draw(
             target = strokeTarget,
             width = layerStack.canvasWidth,
             height = layerStack.canvasHeight,
-            canvasToClip = canvasToFboMatrix,
-            colorLinear = activeStrokeColorLinear,
-            blendPolicy = strokeBrush.blendPolicy,
+            matrix = canvasToFboMatrix,
+            mesh = mesh,
+            color = activeStrokeColorLinear,
             flow = strokeBrush.flow,
+            coverageOnly = false,
         )
+        if (!drawn) {
+            if (BuildConfig.DEBUG) {
+                Log.w(FRAME_DIAG_TAG, "ribbon commit skipped: mesh over limit")
+            }
+            return
+        }
 
         if (strokeCommitter.commit(
             layer = layer,
@@ -1332,7 +1948,7 @@ class EngineRenderer(
             canvasHeight = layerStack.canvasHeight,
             opacity = strokeBrush.opacity,
             erase = activeStrokeErase,
-        )) {
+        ) is StrokeCommitter.CommitResult.Queued) {
             publishState()
         }
     }
@@ -1360,7 +1976,17 @@ class EngineRenderer(
     }
 
     companion object {
+        /** Bounded GL-thread work per frame; ordered input is never dropped. */
+        private const val MAX_INPUT_BATCHES_PER_FRAME = 6
+        /** Protects the render budget even when one backlog batch is expensive. */
+        private const val MAX_INPUT_PROCESS_NANOS = 2_000_000L
+        /** Emit a single aggregate timing record per second in debug builds. */
+        private const val FRAME_LOG_INTERVAL_NANOS = 1_000_000_000L
+        /** Per-MOVE Logcat I/O is expensive on debug tablet builds. */
+        private const val LOG_STAMP_PREVIEW = false
         private const val BRUSH_DIAG_TAG = "BrushDiag"
+        private const val INPUT_LATENCY_TAG = "InputLatency"
+        private const val FRAME_DIAG_TAG = "WetInkFrame"
         private const val THUMBNAIL_TAG = "ThumbnailBuild"
         private const val AA_MARGIN_PX = 4f
         private const val STAMP_DIRTY_MARGIN_PX = 4f

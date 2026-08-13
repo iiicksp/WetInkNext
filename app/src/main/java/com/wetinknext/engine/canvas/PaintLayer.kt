@@ -1,5 +1,6 @@
 package com.wetinknext.engine.canvas
 
+import com.wetinknext.engine.gl.BudgetedTargets
 import com.wetinknext.engine.gl.RenderTarget
 
 /** One paintable document layer and its private GPU target. */
@@ -18,19 +19,25 @@ class PaintLayer(
     var created = false
         private set
 
-    fun create(width: Int, height: Int, preferHalfFloat: Boolean) {
-        if (created && target.width == width && target.height == height) return
-        target.create(width, height, preferHalfFloat)
+    fun create(
+        targets: BudgetedTargets,
+        width: Int,
+        height: Int,
+        preferHalfFloat: Boolean,
+    ): Boolean {
+        if (created && target.width == width && target.height == height) return true
+        if (!targets.create(target, "layer-$id", width, height, preferHalfFloat)) return false
         target.clear(0f, 0f, 0f, 0f)
         created = true
+        return true
     }
 
     fun clear() {
         if (created) target.clear(0f, 0f, 0f, 0f)
     }
 
-    fun release() {
-        target.release()
+    fun release(targets: BudgetedTargets) {
+        targets.release(target)
         created = false
     }
 }

@@ -2,6 +2,7 @@ package com.wetinknext.engine.core
 
 import com.wetinknext.domain.document.ProjectDocument
 import com.wetinknext.engine.canvas.LayerStack
+import com.wetinknext.engine.gl.BudgetedTargets
 import com.wetinknext.engine.gl.GlCaps
 import com.wetinknext.engine.undo.UndoManager
 
@@ -33,8 +34,8 @@ class DocumentSession(
         projectDirty = dirtyLayerIds.isNotEmpty()
     }
 
-    fun loadIntoGpu(caps: GlCaps) {
-        layerStack.create(caps, document)
+    fun loadIntoGpu(caps: GlCaps, targets: BudgetedTargets) {
+        layerStack.create(caps, document, targets)
         document.layers.forEach { layer ->
             LayerTileCodec.uploadPersistent(
                 target = checkNotNull(layerStack.findLayerById(layer.id)).target,

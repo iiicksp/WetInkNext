@@ -15,6 +15,10 @@ class RenderTarget {
     var usesHalfFloat: Boolean = false
         private set
 
+    /** Byte size of one RGBA pixel in the backing texture's actual format. */
+    val bytesPerPixel: Int
+        get() = if (usesHalfFloat) 8 else 4
+
     fun create(width: Int, height: Int, preferHalfFloat: Boolean) {
         GlCheck.checkOnGlThread()
         require(width > 0 && height > 0)

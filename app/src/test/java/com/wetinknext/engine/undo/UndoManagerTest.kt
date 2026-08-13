@@ -6,6 +6,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import com.wetinknext.engine.canvas.BlendMode
 
 class UndoManagerTest {
     @Test
@@ -127,6 +128,49 @@ class UndoManagerTest {
 
         assertEquals(0, manager.undoCount)
         assertEquals(5, manager.redoCount)
+    }
+
+    @Test
+    fun layerPropertiesAreFirstClassZeroPixelHistory() {
+        val entry = UndoEntry(
+            DocumentCommand.LayerProperties(
+                layerId = 7L,
+                before = LayerPropertiesState(true, false, 1f, BlendMode.NORMAL),
+                after = LayerPropertiesState(false, false, .4f, BlendMode.NORMAL),
+            ),
+        )
+
+        assertEquals(UndoOperationType.LAYER_PROPERTIES, entry.operation)
+        assertEquals(0L, entry.memorySize)
+        assertEquals(7L, entry.layerId)
+    }
+
+    @Test
+    fun removeLayerCommandSurvivesNormalStackMoves() {
+        val manager = UndoManager()
+        val entry = UndoEntry(
+            DocumentCommand.RemoveLayer(
+                layerId = 9L,
+                layer = RemovedLayerState(
+                    index = 1,
+                    activeLayerIdBefore = 9L,
+                    activeLayerIdAfter = 2L,
+                    name = "Paint",
+                    visible = true,
+                    locked = false,
+                    opacity = 1f,
+                    blendMode = BlendMode.NORMAL,
+                    version = 3L,
+                    tiles = listOf(tile(0)),
+                ),
+            ),
+        )
+        manager.push(entry)
+
+        assertTrue(manager.commitUndo(entry))
+        assertSame(entry, manager.peekRedo())
+        assertTrue(manager.commitRedo(entry))
+        assertSame(entry, manager.peekUndo())
     }
 
     private fun entry(layerId: Long): UndoEntry = UndoEntry(

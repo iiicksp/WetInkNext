@@ -9,7 +9,29 @@ class DabBuffer(val capacity: Int = DEFAULT_CAPACITY) {
     val floats = ByteBuffer.allocateDirect(capacity * FLOATS_PER_DAB * Float.SIZE_BYTES).order(ByteOrder.nativeOrder()).asFloatBuffer()
     var count = 0; private set; var overflowCount = 0L; private set
     fun clear() { count = 0; overflowCount = 0L; floats.clear() }
-    fun add(x: Float, y: Float, radius: Float, rotation: Float, coverage: Float, flow: Float): Boolean { if (count >= capacity) { overflowCount++; return false }; floats.put(x); floats.put(y); floats.put(radius); floats.put(rotation); floats.put(coverage.coerceIn(0f, 1f)); floats.put(flow.coerceIn(0f, 1f)); count++; return true }
+    fun add(
+        x: Float,
+        y: Float,
+        radius: Float,
+        rotation: Float,
+        coverage: Float,
+        flow: Float,
+        hardness: Float,
+    ): Boolean {
+        if (count >= capacity) {
+            overflowCount++
+            return false
+        }
+        floats.put(x)
+        floats.put(y)
+        floats.put(radius)
+        floats.put(rotation)
+        floats.put(coverage.coerceIn(0f, 1f))
+        floats.put(flow.coerceIn(0f, 1f))
+        floats.put(hardness.coerceIn(0f, 1f))
+        count++
+        return true
+    }
     fun prepareForUpload() { floats.position(0); floats.limit(count * FLOATS_PER_DAB) }
     fun prepareForUpload(firstDab: Int, dabCount: Int) {
         require(firstDab >= 0)
@@ -43,5 +65,5 @@ class DabBuffer(val capacity: Int = DEFAULT_CAPACITY) {
             )
         }
     }
-    companion object { const val FLOATS_PER_DAB = 6; const val DEFAULT_CAPACITY = 8192 }
+    companion object { const val FLOATS_PER_DAB = 7; const val DEFAULT_CAPACITY = 8192 }
 }

@@ -2,17 +2,23 @@ package com.wetinknext.engine.gl
 
 object ShaderLib {
     const val compositorVertex="""#version 300 es
-        layout(location=0) in vec2 aPosition;uniform mat4 uCanvasToClip;uniform vec2 uCanvasSize;out vec2 vUv;void main(){vUv=aPosition/uCanvasSize;gl_Position=uCanvasToClip*vec4(aPosition,0.,1.);}"""
+        layout(location=0) in vec2 aPosition;uniform mat4 uCanvasToClip;uniform vec2 uCanvasSize;out vec2 vUv;out vec2 vScreenUv;void main(){vUv=aPosition/uCanvasSize;gl_Position=uCanvasToClip*vec4(aPosition,0.,1.);vScreenUv=gl_Position.xy*.5+.5;}"""
     const val compositorFragment = """#version 300 es
         precision highp float;
 
         in vec2 vUv;
+        in vec2 vScreenUv;
         uniform sampler2D uLayerTex;
         uniform sampler2D uStrokeTex;
+        uniform sampler2D uScreenStrokeTex;
+        uniform sampler2D uStrokeCoverageTex;
         uniform int uStrokeActive;
+        uniform int uStrokeIsScreenSpace;
+        uniform int uStrokeMode;
         uniform int uStrokeErase;
         uniform float uOpacity;
         uniform float uStrokeOpacity;
+        uniform vec3 uStrokeColorLinear;
 
         out vec4 fragColor;
 
@@ -20,7 +26,22 @@ object ShaderLib {
             vec4 layer = texture(uLayerTex, vUv);
 
             if (uStrokeActive == 1) {
-                vec4 stroke = texture(uStrokeTex, vUv) * uStrokeOpacity;
+                vec4 stroke;
+                if (uStrokeMode == 1) {
+                    float coverage = (
+                        uStrokeIsScreenSpace == 1
+                            ? texture(uStrokeCoverageTex, vScreenUv).a
+                            : texture(uStrokeCoverageTex, vUv).a
+                    );
+                    float alpha = coverage * uStrokeOpacity;
+                    stroke = vec4(uStrokeColorLinear * alpha, alpha);
+                } else {
+                    stroke = (
+                        uStrokeIsScreenSpace == 1
+                            ? texture(uScreenStrokeTex, vScreenUv)
+                            : texture(uStrokeTex, vUv)
+                    ) * uStrokeOpacity;
+                }
 
                 // Both textures contain premultiplied linear RGBA.
                 if (uStrokeErase == 1) {
@@ -60,22 +81,35 @@ object ShaderLib {
             fragColor = vec4(srgb * color.a, color.a);
         }
     """
+    const val linearCopyFragment = """#version 300 es
+        precision highp float;
+
+        in vec2 vUv;
+        uniform sampler2D uTexture;
+        out vec4 fragColor;
+
+        void main() {
+            fragColor = texture(uTexture, vUv);
+        }
+    """
     const val dabVertex = """#version 300 es
         layout(location = 0) in vec2 aCorner;
         layout(location = 1) in vec4 iDab0;
-        layout(location = 2) in vec2 iDab1;
+        layout(location = 2) in vec3 iDab1;
         uniform mat4 uCanvasToClip;
         uniform vec2 uCanvasSize;
         out vec2 vLocal;
         out vec2 vCanvasUv;
         flat out float vCoverage;
         flat out float vFlow;
+        flat out float vHardness;
         void main(){
             float c=cos(iDab0.w), s=sin(iDab0.w);
             vec2 r=vec2(c*aCorner.x-s*aCorner.y,s*aCorner.x+c*aCorner.y);
             vLocal=aCorner;
             vCoverage=iDab1.x;
             vFlow=iDab1.y;
+            vHardness=iDab1.z;
             vec2 p = iDab0.xy+r*iDab0.z;
             vCanvasUv = p / uCanvasSize;
             gl_Position=uCanvasToClip*vec4(p,0.,1.);
@@ -87,6 +121,7 @@ object ShaderLib {
         in vec2 vCanvasUv;
         flat in float vCoverage;
         flat in float vFlow;
+        flat in float vHardness;
         uniform vec3 uColorLinear;
         uniform sampler2D uGrainTex;
         uniform int uGrainActive;
@@ -100,6 +135,7 @@ object ShaderLib {
         uniform int uShapeActive;
         uniform int uReverseShape;
         uniform int uRgbToAlpha;
+        uniform int uFalloffType;
         out vec4 fragColor;
         float luminance(vec3 color) {
             return dot(color, vec3(0.299, 0.587, 0.114));
@@ -108,10 +144,45 @@ object ShaderLib {
             float adjusted = clamp((value - 0.5) * contrast + 0.5, 0.0, 1.0);
             return mix(1.0 - depth, 1.0, adjusted);
         }
+        float dabCoverage(float r, float hardness) {
+            float aa = max(fwidth(r), .001);
+            // 0 = HARD
+            if (uFalloffType == 0) {
+                return 1.0 - smoothstep(1.0 - aa, 1.0 + aa, r);
+            }
+            // 1 = SOFT (pencil / charcoal)
+            if (uFalloffType == 1) {
+                float t = clamp(r, 0.0, 1.0);
+                float core = 1.0 - t * t * (3.0 - 2.0 * t);
+                float edgeAA = 1.0 - smoothstep(1.0 - aa, 1.0, r);
+                return core * edgeAA * mix(0.4, 1.0, hardness);
+            }
+            // 2 = GAUSSIAN
+            if (uFalloffType == 2) {
+                float sigma = mix(0.22, 0.48, 1.0 - hardness);
+                float gauss = exp(-(r * r) / (2.0 * sigma * sigma));
+                float edgeAA = 1.0 - smoothstep(1.0 - aa, 1.0, r);
+                return gauss * edgeAA;
+            }
+            // 3 = AIRBRUSH
+            if (uFalloffType == 3) {
+                float t = 1.0 - clamp(r, 0.0, 1.0);
+                float edgeAA = 1.0 - smoothstep(1.0 - aa, 1.0, r);
+                return t * t * t * edgeAA;
+            }
+            // 4 = FLAT_MARKER
+            if (uFalloffType == 4) {
+                float plateau = smoothstep(1.0, 0.85, r);
+                float edgeAA = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, r);
+                return plateau * edgeAA;
+            }
+            // Legacy fallback: original smoothstep
+            float edge = mix(1.0 - aa, 1.0 - aa * .15, clamp(hardness, 0.0, 1.0));
+            return 1.0 - smoothstep(edge, 1.0 + aa, r);
+        }
         void main(){
             float r=length(vLocal);
-            float aa=max(fwidth(r),.001);
-            float cov=1.-smoothstep(1.-aa,1.+aa,r);
+            float cov=dabCoverage(r,vHardness);
             if (cov <= 0.0) discard;
 
             float shapeMask = 1.0;
@@ -130,8 +201,9 @@ object ShaderLib {
                     ? vCanvasUv * max(uGrainScale, 0.0001)
                     : (vLocal * 0.5 + 0.5) * max(uGrainScale, 0.0001);
                 vec4 grainColor = texture(uGrainTex, uv);
+                float effectiveDepth = uTextureDepth * mix(1.0, 0.2, vCoverage);
                 grainFactor = applyTextureLevels(
-                    luminance(grainColor.rgb), uTextureContrast, uTextureDepth
+                    luminance(grainColor.rgb), uTextureContrast, effectiveDepth
                 );
             }
 
@@ -148,64 +220,47 @@ object ShaderLib {
         precision highp float;
 
         in vec2 vUv;
-        uniform sampler2D uColorTex;
         uniform sampler2D uCoverageTex;
+        uniform vec3 uColorLinear;
         uniform float uOpacity;
         out vec4 fragColor;
 
         void main() {
-            vec4 color = texture(uColorTex, vUv);
             float coverage = texture(uCoverageTex, vUv).a;
             float alpha = coverage * uOpacity;
-            vec3 straightColor = color.a > 0.0001
-                ? color.rgb / color.a
-                : vec3(0.0);
-            fragColor = vec4(straightColor * alpha, alpha);
+            fragColor = vec4(uColorLinear * alpha, alpha);
         }
-    """
-    const val strokeCompositeFragment = """#version 300 es
-        precision highp float; in vec2 vUv; uniform sampler2D uCanvasTex; uniform sampler2D uStrokeTex; uniform int uStrokeActive; out vec4 fragColor;
-        vec3 toSrgb(vec3 c){c=clamp(c,0.,1.);return mix(c*12.92,1.055*pow(c,vec3(1./2.4))-.055,step(vec3(.0031308),c));}
-        vec3 unp(vec4 c){return c.a<=.0001?vec3(0.):c.rgb/c.a;}
-        void main(){vec4 c=texture(uCanvasTex,vUv);vec4 s=texture(uStrokeTex,vUv);float a=uStrokeActive==1?s.a+c.a*(1.-s.a):c.a;vec3 rgb=uStrokeActive==1&&a>.0001?(unp(s)*s.a+unp(c)*c.a*(1.-s.a))/a:unp(c);fragColor=vec4(toSrgb(rgb),1.);}
-    """
-    const val canvasPresentVertex = """#version 300 es
-        layout(location = 0) in vec2 aPosition;
-        uniform mat4 uCanvasToClip;
-        uniform vec2 uCanvasSize;
-        out vec2 vUv;
-        void main() {
-            vUv = aPosition / uCanvasSize;
-            gl_Position = uCanvasToClip * vec4(aPosition, 0.0, 1.0);
-        }
-    """
-    const val presentFragment = """#version 300 es
-        precision highp float;
-        in vec2 vUv;
-        uniform sampler2D uTexture;
-        out vec4 fragColor;
-        void main() { fragColor = texture(uTexture, vUv); }
     """
     const val fullscreenVertex = """#version 300 es
         layout(location = 0) in vec2 aPosition;
         out vec2 vUv;
         void main() { vUv = aPosition * 0.5 + 0.5; gl_Position = vec4(aPosition, 0.0, 1.0); }
     """
-    const val solidFragment = """#version 300 es
+    const val canvasBackdropFragment = """#version 300 es
         precision highp float;
-        in vec2 vUv;
+
+        uniform vec3 uBackgroundColor;
+        uniform vec3 uGridColor;
+        uniform int uMode;
         out vec4 fragColor;
-        void main() { fragColor = vec4(vUv, 0.0, 1.0); }
-    """
-    const val ribbonVertex = """#version 300 es
-        layout(location=0) in vec2 aPos; layout(location=1) in float aCoverage; layout(location=2) in float aAlpha;
-        uniform mat4 uCanvasToClip; out float vCoverage; out float vAlpha;
-        void main(){vCoverage=aCoverage;vAlpha=aAlpha;gl_Position=uCanvasToClip*vec4(aPos,0.,1.);}
-    """
-    const val ribbonFragment = """#version 300 es
-        precision highp float; in float vCoverage; in float vAlpha; uniform vec3 uColorLinear; uniform float uFlow;
-        uniform int uAntiAliasLevel; uniform int uNoAntialias; out vec4 fragColor;
-        void main(){float cov=vCoverage;if(uNoAntialias==1||uAntiAliasLevel==0)cov=step(.5,cov);else{float e=uAntiAliasLevel==1?.35:uAntiAliasLevel==2?.5:.7;cov=smoothstep(.5-e,.5+e,cov);}float a=vAlpha*cov*uFlow;fragColor=vec4(uColorLinear*a,a);}
+
+        void main() {
+            const float cellPx = 28.0;
+            vec2 pixel = gl_FragCoord.xy;
+            vec3 color = uBackgroundColor;
+
+            if (uMode == 1) {
+                vec2 insideCell = mod(pixel, cellPx);
+                bool isGridLine = insideCell.x < 1.0 || insideCell.y < 1.0;
+                color = isGridLine ? uGridColor : uBackgroundColor;
+            } else {
+                vec2 cell = floor(pixel / cellPx);
+                float parity = mod(cell.x + cell.y, 2.0);
+                color = parity < 1.0 ? uGridColor : uBackgroundColor;
+            }
+
+            fragColor = vec4(color, 1.0);
+        }
     """
 
     /**
@@ -255,6 +310,7 @@ object ShaderLib {
         uniform float uTextureDepth;
         uniform float uTextureContrast;
         uniform float uFlow;
+        uniform int uCoverageOnly;
         out vec4 fragColor;
 
         float sdRoundCone(vec2 p, vec2 a, vec2 b, float r1, float r2) {
@@ -306,8 +362,12 @@ object ShaderLib {
                 1.0
             );
             float segmentCoverage = mix(vA.w, vB.w, segmentT);
-            float finalAlpha = cov * segmentCoverage * grainFactor * uFlow;
-            fragColor = vec4(uColorLinear * finalAlpha, finalAlpha);
+            float coverage = cov * segmentCoverage * grainFactor * uFlow;
+            if (uCoverageOnly == 1) {
+                fragColor = vec4(0.0, 0.0, 0.0, coverage);
+            } else {
+                fragColor = vec4(uColorLinear * coverage, coverage);
+            }
         }
     """
 
@@ -318,5 +378,32 @@ object ShaderLib {
         uniform float uOpacity;
         out vec4 fragColor;
         void main() { fragColor = texture(uStrokeTex, vUv) * uOpacity; }
+    """
+
+    const val ribbonMeshVertex = """#version 300 es
+        layout(location = 0) in vec2 aPosition;
+        layout(location = 1) in float aCoverage;
+        uniform mat4 uCanvasToClip;
+        out float vCoverage;
+        void main() {
+            vCoverage = aCoverage;
+            gl_Position = uCanvasToClip * vec4(aPosition, 0.0, 1.0);
+        }
+    """
+    const val ribbonMeshFragment = """#version 300 es
+        precision highp float;
+        in float vCoverage;
+        uniform vec3 uColorLinear;
+        uniform float uFlow;
+        uniform int uCoverageOnly;
+        out vec4 fragColor;
+        void main() {
+          float coverage = clamp(vCoverage * uFlow, 0.0, 1.0);
+          if (uCoverageOnly == 1) {
+            fragColor = vec4(0.0, 0.0, 0.0, coverage);
+          } else {
+            fragColor = vec4(uColorLinear * coverage, coverage);
+          }
+        }
     """
 }

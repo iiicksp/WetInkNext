@@ -9,6 +9,29 @@ import java.nio.ByteOrder
 object TileSnapshotCapture {
     private var reusable: ByteBuffer? = null
 
+    /**
+     * Returns the number of whole undo tiles intersecting [bounds].
+     *
+     * This is intentionally CPU-only: callers can use it to flag expensive
+     * readback before calling [capture], without changing undo semantics.
+     */
+    fun countTiles(target: RenderTarget, bounds: IntArray): Int {
+        require(bounds.size >= 4)
+
+        val left = bounds[0].coerceIn(0, target.width)
+        val top = bounds[1].coerceIn(0, target.height)
+        val right = bounds[2].coerceIn(0, target.width)
+        val bottom = bounds[3].coerceIn(0, target.height)
+        if (right <= left || bottom <= top) return 0
+
+        val firstTileX = left / TileSnapshot.TILE_SIZE
+        val lastTileX = (right - 1) / TileSnapshot.TILE_SIZE
+        val firstTileY = top / TileSnapshot.TILE_SIZE
+        val lastTileY = (bottom - 1) / TileSnapshot.TILE_SIZE
+        return (lastTileX - firstTileX + 1) *
+            (lastTileY - firstTileY + 1)
+    }
+
     /** Captures every 256 px tile intersecting [bounds] = left, top, right, bottom. */
     fun capture(target: RenderTarget, bounds: IntArray): List<RawTileSnapshot> {
         GlCheck.checkOnGlThread()
@@ -30,11 +53,7 @@ object TileSnapshotCapture {
             )
         }
 
-        val bytesPerPixel = if (target.usesHalfFloat) {
-            TileSnapshot.BYTES_PER_PIXEL_RGBA16F
-        } else {
-            TileSnapshot.BYTES_PER_PIXEL_RGBA8
-        }
+        val bytesPerPixel = target.bytesPerPixel
         val glType = if (target.usesHalfFloat) GLES30.GL_HALF_FLOAT else GLES30.GL_UNSIGNED_BYTE
         val result = ArrayList<RawTileSnapshot>()
         target.bind()

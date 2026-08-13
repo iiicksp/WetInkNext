@@ -1,5 +1,7 @@
 package com.wetinknext.engine.brush
 
+import android.util.Log
+import com.wetinknext.BuildConfig
 import com.wetinknext.engine.input.InputBatch
 import kotlin.math.hypot
 import kotlin.math.max
@@ -26,6 +28,12 @@ import kotlin.math.pow
 class CapsuleEmitter(
     private var settings: BrushSettings,
 ) {
+    /** Retains the same resolved samples for the welded RIBBON path. */
+    private val ribbonGeometry = RibbonGeometryBuilder()
+    private var ribbonMesh: RibbonGeometryBuilder.Mesh? = null
+    private var ribbonMeshDirty = true
+    var ribbonMeshVersion: Long = 0L
+        private set
     private var strokeSettings: BrushSettings? = null
     private val stabilizer = Stabilizer()
     private val pressureFilter = PressureFilter()
@@ -39,6 +47,9 @@ class CapsuleEmitter(
     private var lastY = 0f
     private var lastRadius = 0f
     private var lastCoverage = 1f
+    private var firstX = 0f
+    private var firstY = 0f
+    private var firstRadius = 0f
     // Reserved for a future oriented tip; the round capsule deliberately ignores it.
     private var lastOrientation = 0f
     private var lastTiltX = 0f
@@ -56,6 +67,10 @@ class CapsuleEmitter(
     private var emittedSegments = 0
 
     var hasStroke: Boolean = false
+        private set
+
+    /** True only after UP confirms a sufficiently long path returned to start. */
+    var closedLoop: Boolean = false
         private set
 
     var totalLength: Float = 0f
@@ -103,6 +118,9 @@ class CapsuleEmitter(
         lastY = 0f
         lastRadius = 0f
         lastCoverage = 1f
+        firstX = 0f
+        firstY = 0f
+        firstRadius = 0f
         lastOrientation = 0f
         lastTiltX = 0f
         lastTiltY = 0f
@@ -111,6 +129,7 @@ class CapsuleEmitter(
 
         emittedSegments = 0
         hasStroke = false
+        closedLoop = false
         totalLength = 0f
         strokeDistance = 0f
 
@@ -122,6 +141,10 @@ class CapsuleEmitter(
 
         stabilizer.reset()
         pressureFilter.reset()
+        ribbonGeometry.clear()
+        ribbonMesh = null
+        ribbonMeshDirty = true
+        ribbonMeshVersion++
     }
 
     /**
@@ -161,7 +184,15 @@ class CapsuleEmitter(
         val x = stabilizer.x
         val y = stabilizer.y
         val filteredPressure = pressureFilter.filter(sample.timestampNanos, sample.pressure)
-        BrushDynamics.resolve(resolvedSettings, filteredPressure, sample.tiltX, sample.tiltY, 0f, sample.orientationRad, resolvedDab)
+        BrushDynamics.resolve(
+            settings = resolvedSettings,
+            pressure = filteredPressure,
+            tiltX = sample.tiltX,
+            tiltY = sample.tiltY,
+            velocityPxPerSecond = 0f,
+            random01 = 0.5f,
+            out = resolvedDab,
+        )
         val radius = resolvedDab.radius
         val coverage = resolvedDab.coverage
 
@@ -169,12 +200,15 @@ class CapsuleEmitter(
         lastY = y
         lastRadius = radius
         lastCoverage = coverage
-        lastOrientation = resolvedDab.rotation
+        lastOrientation = resolvedDab.rotationRad
         lastTiltX = sample.tiltX
         lastTiltY = sample.tiltY
-        out.setStrokeRotation(resolvedDab.rotation)
+        out.setStrokeRotation(resolvedDab.rotationRad)
         hasLastPoint = true
         hasStroke = true
+        addRibbonPoint(x, y, radius, coverage, resolvedDab.rotationRad)
+        ribbonMeshDirty = true
+        ribbonMeshVersion++
 
         // Инициализация окна
         p0x = x; p0y = y; p0r = radius
@@ -229,20 +263,20 @@ class CapsuleEmitter(
             val y = stabilizer.y
             val filteredPressure = pressureFilter.filter(sample.timestampNanos, sample.pressure)
             BrushDynamics.resolve(
-                settings,
-                filteredPressure,
-                sample.tiltX,
-                sample.tiltY,
-                stabilizer.velocity,
-                sample.orientationRad,
-                resolvedDab,
+                settings = settings,
+                pressure = filteredPressure,
+                tiltX = sample.tiltX,
+                tiltY = sample.tiltY,
+                velocityPxPerSecond = stabilizer.velocity,
+                random01 = 0.5f,
+                out = resolvedDab,
             )
             val radius = resolvedDab.radius
             val coverage = resolvedDab.coverage
-            lastOrientation = resolvedDab.rotation
+            lastOrientation = resolvedDab.rotationRad
             lastTiltX = sample.tiltX
             lastTiltY = sample.tiltY
-            out.setStrokeRotation(resolvedDab.rotation)
+            out.setStrokeRotation(resolvedDab.rotationRad)
 
             emitPoint(
                 x = x,
@@ -291,8 +325,41 @@ class CapsuleEmitter(
             taperScale(distanceFromStart, meshLength, settings)
         }
 
+        val closureDistance = hypot(lastX - firstX, lastY - firstY)
+        val closureThreshold = max(
+            2f * minimumPointDistance(),
+            minOf(MAX_CLOSURE_PX, strokeDistance * CLOSURE_LENGTH_RATIO),
+        )
+        closedLoop = settings.ribbon.autoCloseLoop && hasStroke &&
+            strokeDistance >= max(firstRadius, lastRadius) * MIN_LOOP_LENGTH_TO_RADIUS &&
+            closureDistance <= closureThreshold
+        ClosureDebug.publish(closureDistance, closureThreshold, closedLoop, ribbonGeometry.count)
+
         active = false
         pointerId = -1
+        ribbonMeshDirty = true
+        ribbonMeshVersion++
+    }
+
+    /** Mesh is built after UP, when end taper can be evaluated against total length. */
+    fun buildRibbonMesh(): RibbonGeometryBuilder.Mesh? {
+        if (ribbonMeshDirty) {
+            ribbonMesh = strokeSettings?.let { ribbonGeometry.build(it.ribbon, closedLoop) }
+            ribbonMeshDirty = false
+        }
+        return ribbonMesh
+    }
+
+    private fun addRibbonPoint(
+        x: Float,
+        y: Float,
+        radius: Float,
+        coverage: Float,
+        rotation: Float,
+    ) {
+        if (!ribbonGeometry.addPoint(x, y, radius, coverage, rotation) && BuildConfig.DEBUG) {
+            Log.w(TAG, "ribbon point rejected by geometry builder")
+        }
     }
 
     private fun emitPoint(
@@ -338,8 +405,14 @@ class CapsuleEmitter(
         }
 
         hasStroke = true
+        addRibbonPoint(x, y, radius, coverage, lastOrientation)
+        ribbonMeshDirty = true
+        ribbonMeshVersion++
         lastX = x
         lastY = y
+        firstX = x
+        firstY = y
+        firstRadius = radius
         lastRadius = radius
         lastCoverage = coverage
     }
@@ -466,6 +539,7 @@ class CapsuleEmitter(
     }
 
     companion object {
+        private const val TAG = "CapsuleEmitter"
         private const val SMOOTHING_WEIGHT = 0.7f
         private const val STREAMLINE_WEIGHT = 0.3f
 
@@ -477,5 +551,8 @@ class CapsuleEmitter(
 
         private const val INTERPOLATION_STEP_RATIO = 0.4f
         private const val MAX_INTERPOLATION_STEPS = 64
+        private const val MIN_LOOP_LENGTH_TO_RADIUS = 6f
+        private const val MAX_CLOSURE_PX = 24f
+        private const val CLOSURE_LENGTH_RATIO = 0.15f
     }
 }

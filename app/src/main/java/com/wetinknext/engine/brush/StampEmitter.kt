@@ -26,6 +26,9 @@ class StampEmitter(initialSettings: BrushSettings) {
     private var lastTiltY = 0f
     private var lastOrientationRad = 0f
     private var lastVelocity = 0f
+    private var lastEmitTimeNanos = 0L
+    private var randomState = 0x13579BDF
+    private var strokeSeed = 0
     private var carriedDistance = 0f
     private var movedDuringStroke = false
     private var pointCount = 0
@@ -49,6 +52,7 @@ class StampEmitter(initialSettings: BrushSettings) {
         strokeSettings = null
         lastOrientationRad = 0f
         lastVelocity = 0f
+        lastEmitTimeNanos = 0L
         stabilizer.reset()
         pressureFilter.reset()
     }
@@ -59,6 +63,8 @@ class StampEmitter(initialSettings: BrushSettings) {
         strokeSettings: BrushSettings = settings,
     ) {
         reset()
+        strokeSeed++
+        randomState = 0x13579BDF xor strokeSeed
         val resolvedSettings = strokeSettings.resolved()
         this.strokeSettings = resolvedSettings
         if (batch.isEmpty()) return
@@ -74,6 +80,7 @@ class StampEmitter(initialSettings: BrushSettings) {
         lastTiltY = s.tiltY
         lastOrientationRad = s.orientationRad
         lastVelocity = 0f
+        lastEmitTimeNanos = s.timestampNanos
         hasLast = true
         p0x = lastX; p0y = lastY; p0p = lastPressure
         p1x = lastX; p1y = lastY; p1p = lastPressure
@@ -202,8 +209,10 @@ class StampEmitter(initialSettings: BrushSettings) {
                 pressure = probePressure,
                 tiltX = probeTiltX,
                 tiltY = probeTiltY,
-                velocity = lastVelocity + (velocity - lastVelocity) * tProbe,
-                orientationRad = orientationRad,
+                velocityPxPerSecond = lastVelocity + (velocity - lastVelocity) * tProbe,
+                // This probe only selects spacing. Do not consume the stroke
+                // RNG before the dab that will actually be emitted.
+                random01 = 0.5f,
                 out = resolvedDab,
             )
 
@@ -238,6 +247,39 @@ class StampEmitter(initialSettings: BrushSettings) {
         lastTiltY = ty
         lastVelocity = velocity
         lastOrientationRad = orientationRad
+        if (activeSettings().emissionUsesTime) {
+            lastEmitTimeNanos = System.nanoTime()
+        }
+    }
+
+    /** Emits dabs based purely on elapsed time, for effects like airbrush spray. */
+    fun advanceTime(nowNanos: Long, out: DabBuffer): Int {
+        if (!active || !hasLast) return 0
+        val settings = activeSettings()
+        if (!settings.emissionUsesTime) return 0
+        
+        val elapsed = (nowNanos - lastEmitTimeNanos) / 1_000_000_000f
+        val interval = 1f / settings.emissionRateHz.coerceIn(1f, 240f)
+        var emitted = 0
+        
+        // Hard limit to prevent GL thread stall if clock jumps
+        while (elapsed > interval * (emitted + 1) && emitted < 32) {
+            addDab(
+                x = lastX,
+                y = lastY,
+                pressure = lastPressure,
+                tiltX = lastTiltX,
+                tiltY = lastTiltY,
+                velocity = 0f,
+                orientationRad = lastOrientationRad,
+                out = out,
+            )
+            emitted++
+        }
+        if (emitted > 0) {
+            lastEmitTimeNanos += (interval * emitted * 1_000_000_000f).toLong()
+        }
+        return emitted
     }
 
     private fun spacingForRadius(radius: Float): Float {
@@ -262,18 +304,25 @@ class StampEmitter(initialSettings: BrushSettings) {
             pressure = pressure,
             tiltX = tiltX,
             tiltY = tiltY,
-            velocity = velocity,
-            orientationRad = orientationRad,
+            velocityPxPerSecond = velocity,
+            random01 = nextRandom01(),
             out = resolvedDab,
         )
         out.add(
-            x = x,
-            y = y,
+            x = x + resolvedDab.scatterX,
+            y = y + resolvedDab.scatterY,
             radius = resolvedDab.radius,
-            rotation = resolvedDab.rotation,
+            rotation = resolvedDab.rotationRad,
             coverage = resolvedDab.coverage,
-            flow = settings.flow.coerceIn(0f, 1f),
+            flow = resolvedDab.flow,
+            hardness = resolvedDab.hardness,
         )
+    }
+
+    /** Deterministic LCG: undo/replay never depends on a global random source. */
+    private fun nextRandom01(): Float {
+        randomState = randomState * 1_664_525 + 1_013_904_223
+        return ((randomState ushr 8) and 0x00FF_FFFF) / 16_777_216f
     }
 
 }
