@@ -117,6 +117,8 @@ class EngineRenderer(
     private var grainPath: String? = null
     private var shapeTexture: BrushTexture? = null
     private var shapePath: String? = null
+    private var secondaryShapeTexture: BrushTexture? = null
+    private var secondaryShapePath: String? = null
     private val gpuBudget = RenderTargetBudget()
     private val targets = BudgetedTargets(gpuBudget)
     private val strokeTarget = RenderTarget()
@@ -857,6 +859,9 @@ class EngineRenderer(
             return
         }
 
+        dabRenderer?.setScreenDimensions(screenWidth.toFloat(), screenHeight.toFloat())
+        ribbonMeshRenderer?.setScreenDimensions(screenWidth.toFloat(), screenHeight.toFloat())
+
         layerStack.camera.snapshot().buildCanvasToClip(
             screenWidth.toFloat(),
             screenHeight.toFloat(),
@@ -1187,9 +1192,15 @@ class EngineRenderer(
         grainTexture?.release()
         grainTexture = null
         grainPath = null
+        grainTexture?.release()
+        grainTexture = null
+        grainPath = null
         shapeTexture?.release()
         shapeTexture = null
         shapePath = null
+        secondaryShapeTexture?.release()
+        secondaryShapeTexture = null
+        secondaryShapePath = null
         capsuleRenderer?.release()
         capsuleRenderer = null
         ribbonMeshRenderer?.release()
@@ -1731,6 +1742,7 @@ class EngineRenderer(
         loaded: LoadedBrushTexture,
         scale: Float,
         canvasLocked: Boolean,
+        screenSpace: Boolean,
         depth: Float,
         contrast: Float,
     ) {
@@ -1759,6 +1771,15 @@ class EngineRenderer(
                 depth = depth,
                 contrast = contrast,
             )
+            dabRenderer?.setGrainScreenSpace(screenSpace)
+
+            ribbonMeshRenderer?.setGrainTexture(
+                textureId = newTexture.textureId,
+                scale = scale,
+                depth = depth,
+                contrast = contrast,
+            )
+            ribbonMeshRenderer?.setGrainScreenSpace(screenSpace)
 
             grainTexture = newTexture
             grainPath = loaded.path
@@ -1773,6 +1794,7 @@ class EngineRenderer(
     fun clearGrainTexture() {
         capsuleRenderer?.clearGrainTexture()
         dabRenderer?.clearGrainTexture()
+        ribbonMeshRenderer?.clearGrainTexture()
 
         grainTexture?.release()
         grainTexture = null
@@ -1805,6 +1827,32 @@ class EngineRenderer(
         shapeTexture?.release()
         shapeTexture = null
         shapePath = null
+    }
+
+    fun applyLoadedSecondaryShape(
+        loaded: LoadedBrushTexture,
+        scale: Float,
+    ) {
+        val oldTexture = secondaryShapeTexture
+        val newTexture = BrushTexture()
+
+        try {
+            newTexture.createFromRgba(loaded.width, loaded.height, loaded.rgba)
+            dabRenderer?.setSecondaryShape(newTexture.textureId, scale)
+            secondaryShapeTexture = newTexture
+            secondaryShapePath = loaded.path
+            oldTexture?.release()
+        } catch (error: Throwable) {
+            newTexture.release()
+            throw error
+        }
+    }
+
+    fun clearSecondaryShapeTexture() {
+        dabRenderer?.clearSecondaryShape()
+        secondaryShapeTexture?.release()
+        secondaryShapeTexture = null
+        secondaryShapePath = null
     }
 
     private fun nextLayerName(): String = "Слой ${layerStack.count + 1}"

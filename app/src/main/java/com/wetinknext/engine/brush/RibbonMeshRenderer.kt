@@ -23,10 +23,27 @@ class RibbonMeshRenderer {
     private var uColorLinear = -1
     private var uCoverageOnly = -1
     private var uFlow = -1
+
+    private var uGrainActive = -1
+    private var uGrainTex = -1
+    private var uGrainScale = -1
+    private var uGrainScreenSpace = -1
+    private var uScreenSize = -1
+    private var uTextureContrast = -1
+    private var uTextureDepth = -1
+
     private var vertexUpload: FloatBuffer? = null
     private var indexUpload: IntBuffer? = null
     private var vertexCapacityBytes = 0
     private var indexCapacityBytes = 0
+
+    private var grainTextureId = 0
+    private var grainScale = 1f
+    private var grainScreenSpace = false
+    private var textureDepth = 1f
+    private var textureContrast = 1f
+    private var screenWidth = 1080f
+    private var screenHeight = 1920f
 
     fun create() {
         GlCheck.checkOnGlThread()
@@ -40,6 +57,14 @@ class RibbonMeshRenderer {
         uColorLinear = GLES30.glGetUniformLocation(p.id, "uColorLinear")
         uFlow = GLES30.glGetUniformLocation(p.id, "uFlow")
         uCoverageOnly = GLES30.glGetUniformLocation(p.id, "uCoverageOnly")
+
+        uGrainActive = GLES30.glGetUniformLocation(p.id, "uGrainActive")
+        uGrainTex = GLES30.glGetUniformLocation(p.id, "uGrainTex")
+        uGrainScale = GLES30.glGetUniformLocation(p.id, "uGrainScale")
+        uGrainScreenSpace = GLES30.glGetUniformLocation(p.id, "uGrainScreenSpace")
+        uScreenSize = GLES30.glGetUniformLocation(p.id, "uScreenSize")
+        uTextureContrast = GLES30.glGetUniformLocation(p.id, "uTextureContrast")
+        uTextureDepth = GLES30.glGetUniformLocation(p.id, "uTextureDepth")
 
         check(uCanvasToClip >= 0) { "Ribbon uniform uCanvasToClip is missing" }
         check(uColorLinear >= 0) { "Ribbon uniform uColorLinear is missing" }
@@ -79,6 +104,34 @@ class RibbonMeshRenderer {
 
         GlCheck.noError("RibbonMeshRenderer create")
     }
+
+    fun setGrainTexture(
+        textureId: Int,
+        scale: Float,
+        depth: Float,
+        contrast: Float,
+    ) {
+        grainTextureId = textureId
+        grainScale = scale.coerceAtLeast(0.0001f)
+        textureDepth = depth.coerceIn(0f, 1f)
+        textureContrast = contrast.coerceIn(0f, 2f)
+    }
+
+    fun clearGrainTexture() {
+        grainTextureId = 0
+        grainScale = 1f
+        textureDepth = 1f
+        textureContrast = 1f
+    }
+
+    fun setScreenDimensions(width: Float, height: Float) {
+        screenWidth = width
+        screenHeight = height
+    }
+
+    fun setGrainScreenSpace(screenSpace: Boolean) {
+        grainScreenSpace = screenSpace
+    }
     fun draw(
         target: RenderTarget,
         width: Int,
@@ -110,6 +163,19 @@ class RibbonMeshRenderer {
         GLES30.glUniform3fv(uColorLinear, 1, color, 0)
         GLES30.glUniform1i(uCoverageOnly, if (coverageOnly) 1 else 0)
         GLES30.glUniform1f(uFlow, flow.coerceIn(0f, 1f))
+
+        GLES30.glUniform1i(uGrainActive, if (grainTextureId != 0) 1 else 0)
+        GLES30.glUniform1f(uGrainScale, grainScale)
+        GLES30.glUniform1i(uGrainScreenSpace, if (grainScreenSpace) 1 else 0)
+        GLES30.glUniform2f(uScreenSize, screenWidth, screenHeight)
+        GLES30.glUniform1f(uTextureDepth, textureDepth)
+        GLES30.glUniform1f(uTextureContrast, textureContrast)
+
+        if (grainTextureId != 0) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, grainTextureId)
+            GLES30.glUniform1i(uGrainTex, 2)
+        }
 
         val vertexBuffer = obtainVertexBuffer(vertexFloats)
         vertexBuffer.clear()
@@ -201,6 +267,7 @@ class RibbonMeshRenderer {
         indexCapacityBytes = 0
         vertexUpload = null
         indexUpload = null
+        grainTextureId = 0
         program?.release()
         program = null
     }

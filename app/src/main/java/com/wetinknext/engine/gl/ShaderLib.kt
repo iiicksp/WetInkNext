@@ -127,6 +127,8 @@ object ShaderLib {
         uniform int uGrainActive;
         uniform float uGrainScale;
         uniform int uGrainCanvasLocked;
+        uniform int uGrainScreenSpace;
+        uniform vec2 uScreenSize;
         uniform float uTextureDepth;
         uniform float uTextureContrast;
         uniform float uStrokeOpacity;
@@ -136,6 +138,9 @@ object ShaderLib {
         uniform int uReverseShape;
         uniform int uRgbToAlpha;
         uniform int uFalloffType;
+        uniform int uSecondaryShapeActive;
+        uniform sampler2D uSecondaryShapeTex;
+        uniform float uSecondaryShapeScale;
         out vec4 fragColor;
         float luminance(vec3 color) {
             return dot(color, vec3(0.299, 0.587, 0.114));
@@ -146,37 +151,23 @@ object ShaderLib {
         }
         float dabCoverage(float r, float hardness) {
             float aa = max(fwidth(r), .001);
-            // 0 = HARD
-            if (uFalloffType == 0) {
-                return 1.0 - smoothstep(1.0 - aa, 1.0 + aa, r);
-            }
-            // 1 = SOFT (pencil / charcoal)
+            if (uFalloffType == 0) return 1.0 - smoothstep(1.0 - aa, 1.0 + aa, r);
             if (uFalloffType == 1) {
                 float t = clamp(r, 0.0, 1.0);
                 float core = 1.0 - t * t * (3.0 - 2.0 * t);
-                float edgeAA = 1.0 - smoothstep(1.0 - aa, 1.0, r);
-                return core * edgeAA * mix(0.4, 1.0, hardness);
+                return core * (1.0 - smoothstep(1.0 - aa, 1.0, r)) * mix(0.4, 1.0, hardness);
             }
-            // 2 = GAUSSIAN
             if (uFalloffType == 2) {
                 float sigma = mix(0.22, 0.48, 1.0 - hardness);
-                float gauss = exp(-(r * r) / (2.0 * sigma * sigma));
-                float edgeAA = 1.0 - smoothstep(1.0 - aa, 1.0, r);
-                return gauss * edgeAA;
+                return exp(-(r * r) / (2.0 * sigma * sigma)) * (1.0 - smoothstep(1.0 - aa, 1.0, r));
             }
-            // 3 = AIRBRUSH
             if (uFalloffType == 3) {
                 float t = 1.0 - clamp(r, 0.0, 1.0);
-                float edgeAA = 1.0 - smoothstep(1.0 - aa, 1.0, r);
-                return t * t * t * edgeAA;
+                return t * t * t * (1.0 - smoothstep(1.0 - aa, 1.0, r));
             }
-            // 4 = FLAT_MARKER
             if (uFalloffType == 4) {
-                float plateau = smoothstep(1.0, 0.85, r);
-                float edgeAA = 1.0 - smoothstep(1.0 - aa, 1.0 + aa, r);
-                return plateau * edgeAA;
+                return smoothstep(1.0, 0.85, r) * (1.0 - smoothstep(1.0 - aa, 1.0 + aa, r));
             }
-            // Legacy fallback: original smoothstep
             float edge = mix(1.0 - aa, 1.0 - aa * .15, clamp(hardness, 0.0, 1.0));
             return 1.0 - smoothstep(edge, 1.0 + aa, r);
         }
@@ -194,12 +185,27 @@ object ShaderLib {
                     : shapeColor.a;
                 if (uReverseShape == 1) shapeMask = 1.0 - shapeMask;
             }
+            if (uSecondaryShapeActive == 1) {
+                vec2 secUv = (vLocal * 0.5 + 0.5) * max(uSecondaryShapeScale, 0.0001);
+                secUv = secUv - (max(uSecondaryShapeScale, 0.0001) * 0.5) + 0.5;
+                vec4 secColor = texture(uSecondaryShapeTex, secUv);
+                float secMask = uRgbToAlpha == 1
+                    ? dot(secColor.rgb, vec3(0.299, 0.587, 0.114))
+                    : secColor.a;
+                if (uReverseShape == 1) secMask = 1.0 - secMask;
+                shapeMask *= secMask;
+            }
 
             float grainFactor = 1.0;
             if (uGrainActive == 1) {
-                vec2 uv = uGrainCanvasLocked == 1
-                    ? vCanvasUv * max(uGrainScale, 0.0001)
-                    : (vLocal * 0.5 + 0.5) * max(uGrainScale, 0.0001);
+                vec2 uv;
+                if (uGrainScreenSpace == 1) {
+                    uv = (gl_FragCoord.xy / uScreenSize.y) * max(uGrainScale, 0.0001);
+                } else {
+                    uv = uGrainCanvasLocked == 1
+                        ? vCanvasUv * max(uGrainScale, 0.0001)
+                        : (vLocal * 0.5 + 0.5) * max(uGrainScale, 0.0001);
+                }
                 vec4 grainColor = texture(uGrainTex, uv);
                 float effectiveDepth = uTextureDepth * mix(1.0, 0.2, vCoverage);
                 grainFactor = applyTextureLevels(
@@ -384,21 +390,56 @@ object ShaderLib {
         layout(location = 0) in vec2 aPosition;
         layout(location = 1) in float aCoverage;
         uniform mat4 uCanvasToClip;
+        uniform vec2 uCanvasSize;
+        out vec2 vCanvasUv;
         out float vCoverage;
         void main() {
             vCoverage = aCoverage;
+            vCanvasUv = aPosition / uCanvasSize;
             gl_Position = uCanvasToClip * vec4(aPosition, 0.0, 1.0);
         }
     """
     const val ribbonMeshFragment = """#version 300 es
         precision highp float;
         in float vCoverage;
+        in vec2 vCanvasUv;
+        
         uniform vec3 uColorLinear;
         uniform float uFlow;
         uniform int uCoverageOnly;
+        
+        uniform int uGrainActive;
+        uniform sampler2D uGrainTex;
+        uniform float uGrainScale;
+        uniform int uGrainScreenSpace;
+        uniform vec2 uScreenSize;
+        uniform float uTextureContrast;
+        uniform float uTextureDepth;
+        
         out vec4 fragColor;
+        
+        float luminance(vec3 color) {
+            return dot(color, vec3(0.299, 0.587, 0.114));
+        }
+        float applyTextureLevels(float value, float contrast, float depth) {
+            float adjusted = clamp((value - 0.5) * contrast + 0.5, 0.0, 1.0);
+            return mix(1.0 - depth, 1.0, adjusted);
+        }
+        
         void main() {
-          float coverage = clamp(vCoverage * uFlow, 0.0, 1.0);
+          float grainFactor = 1.0;
+          if (uGrainActive == 1) {
+              vec2 uv = uGrainScreenSpace == 1 
+                  ? (gl_FragCoord.xy / uScreenSize.y) * max(uGrainScale, 0.0001)
+                  : vCanvasUv * max(uGrainScale, 0.0001);
+              vec4 grainColor = texture(uGrainTex, uv);
+              float effectiveDepth = uTextureDepth * mix(1.0, 0.2, vCoverage);
+              grainFactor = applyTextureLevels(
+                  luminance(grainColor.rgb), uTextureContrast, effectiveDepth
+              );
+          }
+          
+          float coverage = clamp(vCoverage * uFlow * grainFactor, 0.0, 1.0);
           if (uCoverageOnly == 1) {
             fragColor = vec4(0.0, 0.0, 0.0, coverage);
           } else {

@@ -205,6 +205,7 @@ class PaintSurfaceView @JvmOverloads constructor(
         path: String,
         scale: Float = 1f,
         canvasLocked: Boolean = true,
+        screenSpace: Boolean = false,
         depth: Float = 1f,
         contrast: Float = 1f,
     ) {
@@ -222,6 +223,7 @@ class PaintSurfaceView @JvmOverloads constructor(
                         loaded = loaded,
                         scale = scale,
                         canvasLocked = canvasLocked,
+                        screenSpace = screenSpace,
                         depth = depth,
                         contrast = contrast,
                     )
@@ -268,6 +270,32 @@ class PaintSurfaceView @JvmOverloads constructor(
         shapeGeneration++
         queueEvent {
             engineRenderer.clearShapeTexture()
+            requestRender()
+        }
+    }
+
+    fun loadSecondaryShapeTexture(
+        path: String,
+        scale: Float = 1f,
+    ) {
+        val generation = ++shapeGeneration
+        textureLoader.loadAsync(
+            path = path,
+            onLoaded = { loaded ->
+                queueEvent {
+                    if (generation != shapeGeneration) return@queueEvent
+                    engineRenderer.applyLoadedSecondaryShape(loaded, scale)
+                    requestRender()
+                }
+            },
+            onError = { error -> post { onTextureError?.invoke(path, error) } },
+        )
+    }
+
+    fun clearSecondaryShapeTexture() {
+        shapeGeneration++
+        queueEvent {
+            engineRenderer.clearSecondaryShapeTexture()
             requestRender()
         }
     }

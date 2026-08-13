@@ -524,6 +524,7 @@ private fun PaintSurfaceView.applyBrushPreset(
             path = grainPath,
             scale = settings.grainScale,
             canvasLocked = settings.grainCanvasLocked,
+            screenSpace = settings.grainScreenSpace,
             depth = settings.textureDepth,
             contrast = settings.textureContrast,
         )
@@ -534,5 +535,12 @@ private fun PaintSurfaceView.applyBrushPreset(
         clearShapeTexture()
     } else {
         loadShapeTexture(path = shapePath, rgbToAlpha = settings.rgbToAlpha)
+    }
+
+    val secondaryShapePath = settings.secondaryShapeAssetPath?.trim()?.takeIf { it.isNotEmpty() }
+    if (secondaryShapePath == null) {
+        clearSecondaryShapeTexture()
+    } else {
+        loadSecondaryShapeTexture(path = secondaryShapePath, scale = settings.secondaryShapeScale)
     }
 }

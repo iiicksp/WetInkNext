@@ -30,6 +30,11 @@ class DabRenderer(private val maxDabs: Int) {
     private var uReverseShape = -1
     private var uRgbToAlpha = -1
     private var uFalloffType = -1
+    private var uGrainScreenSpace = -1
+    private var uScreenSize = -1
+    private var uSecondaryShapeActive = -1
+    private var uSecondaryShapeTex = -1
+    private var uSecondaryShapeScale = -1
 
     private var grainTextureId = 0
     private var grainScale = 1f
@@ -40,6 +45,11 @@ class DabRenderer(private val maxDabs: Int) {
     private var reverseShape = false
     private var rgbToAlpha = false
     private var falloffType = 1 // DabFalloff.SOFT ordinal
+    private var grainScreenSpace = false
+    private var screenWidth = 1080f
+    private var screenHeight = 1920f
+    private var secondaryShapeTextureId = 0
+    private var secondaryShapeScale = 1f
 
     private var uploadedDabCount = 0
     private val blendController = BlendController()
@@ -70,6 +80,11 @@ class DabRenderer(private val maxDabs: Int) {
         uReverseShape = GLES30.glGetUniformLocation(currentProgram.id, "uReverseShape")
         uRgbToAlpha = GLES30.glGetUniformLocation(currentProgram.id, "uRgbToAlpha")
         uFalloffType = GLES30.glGetUniformLocation(currentProgram.id, "uFalloffType")
+        uGrainScreenSpace = GLES30.glGetUniformLocation(currentProgram.id, "uGrainScreenSpace")
+        uScreenSize = GLES30.glGetUniformLocation(currentProgram.id, "uScreenSize")
+        uSecondaryShapeActive = GLES30.glGetUniformLocation(currentProgram.id, "uSecondaryShapeActive")
+        uSecondaryShapeTex = GLES30.glGetUniformLocation(currentProgram.id, "uSecondaryShapeTex")
+        uSecondaryShapeScale = GLES30.glGetUniformLocation(currentProgram.id, "uSecondaryShapeScale")
 
         check(
             uCanvasToClip >= 0 && uColorLinear >= 0 && uStrokeOpacity >= 0 &&
@@ -196,6 +211,25 @@ class DabRenderer(private val maxDabs: Int) {
         grainCanvasLocked = canvasLocked
         textureDepth = depth.coerceIn(0f, 1f)
         textureContrast = contrast.coerceIn(0f, 2f)
+    }
+
+    fun setScreenDimensions(width: Float, height: Float) {
+        screenWidth = width
+        screenHeight = height
+    }
+
+    fun setGrainScreenSpace(screenSpace: Boolean) {
+        grainScreenSpace = screenSpace
+    }
+
+    fun setSecondaryShape(textureId: Int, scale: Float) {
+        secondaryShapeTextureId = textureId
+        secondaryShapeScale = scale.coerceAtLeast(0.0001f)
+    }
+
+    fun clearSecondaryShape() {
+        secondaryShapeTextureId = 0
+        secondaryShapeScale = 1f
     }
 
     fun clearGrainTexture() {
@@ -429,6 +463,10 @@ class DabRenderer(private val maxDabs: Int) {
         GLES30.glUniform1i(uReverseShape, if (reverseShape) 1 else 0)
         GLES30.glUniform1i(uRgbToAlpha, if (rgbToAlpha) 1 else 0)
         GLES30.glUniform1i(uFalloffType, falloffType)
+        GLES30.glUniform1i(uGrainScreenSpace, if (grainScreenSpace) 1 else 0)
+        GLES30.glUniform2f(uScreenSize, screenWidth, screenHeight)
+        GLES30.glUniform1i(uSecondaryShapeActive, if (secondaryShapeTextureId != 0) 1 else 0)
+        GLES30.glUniform1f(uSecondaryShapeScale, secondaryShapeScale)
 
         if (grainTextureId != 0) {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
@@ -439,6 +477,11 @@ class DabRenderer(private val maxDabs: Int) {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE3)
             GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, shapeTextureId)
             GLES30.glUniform1i(uShapeTex, 3)
+        }
+        if (secondaryShapeTextureId != 0) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE4)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, secondaryShapeTextureId)
+            GLES30.glUniform1i(uSecondaryShapeTex, 4)
         }
 
         GLES30.glBindVertexArray(vaoId)
