@@ -144,7 +144,7 @@ object WetSimMath {
                 outR[i] = pigR3.coerceIn(0f, 1f)
                 outG[i] = pigG3.coerceIn(0f, 1f)
                 outB[i] = pigB3.coerceIn(0f, 1f)
-                outW[i] = max(0f, water - evaporation * dt)
+                outW[i] = (water - evaporation * dt).coerceIn(0f, 1f)
             }
         }
 

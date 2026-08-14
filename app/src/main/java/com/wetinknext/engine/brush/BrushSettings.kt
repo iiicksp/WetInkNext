@@ -202,6 +202,7 @@ data class BrushSettings(
             opacity = safeOpacity,
             flow = safeFlow,
             spacing = safeSpacing,
+            pressureGamma = pressureGamma.coerceIn(0.05f, 8f),
             minSizeRatio = safeMinSize,
             velocityToSize = safeVelocityToSize,
             velocityToOpacity = safeVelocityToOpacity,

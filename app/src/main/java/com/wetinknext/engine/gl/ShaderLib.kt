@@ -609,7 +609,7 @@ object ShaderLib {
             pig = mix(pig, pig * (1.0 + rim * 0.6), rim);
 
             // ---- evaporation: water dries over real time; thin washes settle ----
-            water = max(water - clamp(uEvaporation, 0.0, 1.0) * uDeltaTime, 0.0);
+            water = clamp(water - clamp(uEvaporation, 0.0, 1.0) * uDeltaTime, 0.0, 1.0);
 
             float pigCoverage = clamp(max(max(pig.r, pig.g), pig.b), 0.0, 1.0);
 
