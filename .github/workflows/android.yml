@@ -15,4 +15,7 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v3
       - uses: gradle/actions/setup-gradle@v4
+      # The executable bit is easy to lose when the commit is authored on
+      # Windows; restore it so ./gradlew never fails with Permission denied.
+      - run: chmod +x ./gradlew
       - run: ./gradlew :app:compileDebugKotlin :app:testDebugUnitTest :app:lintDebug
