@@ -151,8 +151,46 @@ class StrokeCommitter(
         return CommitResult.Queued
     }
 
-    /** Clears one editable layer and records the full canvas as one undo transaction. */
-        fun processPendingReadbacks(): Boolean {
+    /**
+     * Clears one editable layer and records the full canvas as one undo
+     * transaction. Commit result surfaces through [onLayerCleared] once the
+     * PBO readbacks complete (operation = CLEAR_LAYER).
+     */
+    fun clearLayer(
+        layer: PaintLayer,
+        canvasWidth: Int,
+        canvasHeight: Int,
+    ): CommitResult {
+        GlCheck.checkOnGlThread()
+        if (!layer.created || layer.isLocked) return CommitResult.Rejected
+        if (canvasWidth <= 0 || canvasHeight <= 0) return CommitResult.Rejected
+
+        val bounds = intArrayOf(0, 0, canvasWidth, canvasHeight)
+        logLargeUndoReadback(layer, bounds)
+
+        val before = readbackQueue.issue(layer.target, bounds)
+
+        layer.target.bind()
+        GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
+        GLES30.glDisable(GLES30.GL_BLEND)
+        GLES30.glViewport(0, 0, canvasWidth, canvasHeight)
+        GLES30.glClearColor(0f, 0f, 0f, 0f)
+        GLES30.glClear(GLES30.GL_COLOR_BUFFER_BIT)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+
+        layer.version++
+        val after = readbackQueue.issue(layer.target, bounds)
+        pendingTransactions += PendingTransaction(
+            layer = layer,
+            before = before,
+            after = after,
+            operation = UndoOperationType.CLEAR_LAYER,
+            tag = "clear-layer",
+        )
+        return CommitResult.Queued
+    }
+
+    fun processPendingReadbacks(): Boolean {
         GlCheck.checkOnGlThread()
         readbackQueue.poll()
         var changed = false

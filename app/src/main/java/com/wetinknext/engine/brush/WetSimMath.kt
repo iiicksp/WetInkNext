@@ -85,15 +85,15 @@ object WetSimMath {
                 val wetW = field.water[sIdx]
 
                 // ---- 8-neighbour gather ----
-                val eI = y * w + anchorX(x + 1, w)
-                val wI = y * w + anchorX(x - 1, w)
-                val nI = anchorY(y + 1, field.height) * w + x
-                val sI = anchorY(y - 1, field.height) * w + x
+                val eI = y * w + cx(x + 1, w)
+                val wI = y * w + cx(x - 1, w)
+                val nI = cy(y + 1, field.height) * w + x
+                val sI = cy(y - 1, field.height) * w + x
 
-                val nwI = anchorY(y + 1, field.height) * w + anchorX(x - 1, w)
-                val neI = anchorY(y + 1, field.height) * w + anchorX(x + 1, w)
-                val swI = anchorY(y - 1, field.height) * w + anchorX(x - 1, w)
-                val seI = anchorY(y - 1, field.height) * w + anchorX(x + 1, w)
+                val nwI = cy(y + 1, field.height) * w + cx(x - 1, w)
+                val neI = cy(y + 1, field.height) * w + cx(x + 1, w)
+                val swI = cy(y - 1, field.height) * w + cx(x - 1, w)
+                val seI = cy(y - 1, field.height) * w + cx(x + 1, w)
 
                 val eW = field.water[eI]; val wW = field.water[wI]
                 val nW = field.water[nI]; val sW = field.water[sI]
@@ -153,6 +153,12 @@ object WetSimMath {
         outB.copyInto(field.pigB)
         outW.copyInto(field.water)
     }
+
+/** Integer clamp-to-edge for neighbour offsets (no implicit Float conversion). */
+    private fun cx(x: Int, width: Int): Int = x.coerceIn(0, width - 1)
+
+    /** Integer clamp-to-edge for neighbour offsets (no implicit Float conversion). */
+    private fun cy(y: Int, height: Int): Int = y.coerceIn(0, height - 1)
 
     private fun anchorX(x: Float, width: Int): Int =
         (x.toInt()).coerceIn(0, width - 1)
