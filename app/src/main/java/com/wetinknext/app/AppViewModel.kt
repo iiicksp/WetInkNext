@@ -22,6 +22,8 @@ import com.wetinknext.engine.thumbnail.ThumbnailBuildResult
 import com.wetinknext.domain.document.LoadedWetInkProject
 import java.io.File
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -54,6 +56,7 @@ class AppViewModel(
     var openedProject: LoadedWetInkProject? by mutableStateOf(null)
         private set
     private val autosaveCoordinator = AutosaveCoordinator(viewModelScope)
+    private var recoveryJob: Job? = null
     private var pendingSaveDocument: ProjectDocument? = null
     private var pendingLayerPayloads: Map<Long, ByteArray> = emptyMap()
     private var pendingTilesAcknowledgement: (() -> Unit)? = null
@@ -274,15 +277,8 @@ class AppViewModel(
     private fun schedulePendingSave() {
         val document = pendingSaveDocument ?: return
         uiState = uiState.copy(isDirty = true)
+        scheduleRecoverySnapshot(document)
         autosaveCoordinator.schedule {
-            val recoveryPayloads = pendingLayerPayloads
-            if (recoveryPayloads.isNotEmpty()) {
-                withContext(Dispatchers.IO) {
-                    runCatching { repository.saveRecovery(document, recoveryPayloads) }
-                }
-                    .onFailure { error -> uiState = uiState.copy(errorMessage = error.message) }
-            }
-
             val documentToSave = pendingSaveDocument ?: return@schedule
             val payloadsToSave = pendingLayerPayloads
             val thumbnailToSave = pendingThumbnailWebp
@@ -315,6 +311,58 @@ class AppViewModel(
                 .onFailure { error ->
                     uiState = uiState.copy(isSaving = false, errorMessage = error.message)
                 }
+        }
+    }
+
+    /**
+     * Publishes the crash-recovery snapshot immediately, outside the autosave
+     * debounce: a crash can arrive exactly while the user keeps drawing, so the
+     * debounced autosave must not own the recovery write.
+     */
+    private fun scheduleRecoverySnapshot(document: ProjectDocument) {
+        val payloads = pendingLayerPayloads
+        if (payloads.isEmpty()) return
+        recoveryJob?.cancel()
+        recoveryJob = viewModelScope.launch {
+            withContext(Dispatchers.IO + NonCancellable) {
+                runCatching { repository.saveRecovery(document, payloads) }
+            }.onFailure { error -> uiState = uiState.copy(errorMessage = error.message) }
+        }
+    }
+
+    /**
+     * Force-flushes pending edits. Called on editor pause: Android may kill
+     * the process without onDestroy, so the recovery snapshot plus the real
+     * save must land on disk before the app goes to the background.
+     */
+    fun flushPendingSave() {
+        val document = openedDocument ?: return
+        val payloads = pendingLayerPayloads
+        val docToSave = pendingSaveDocument ?: document
+        if (payloads.isEmpty() && pendingSaveDocument == null) return
+        val thumbnail = pendingThumbnailWebp
+        val layerPreviews = pendingLayerPreviewsWebp
+        val acknowledge = pendingTilesAcknowledgement
+        viewModelScope.launch {
+            uiState = uiState.copy(isSaving = true)
+            autosaveCoordinator.flushNow {
+                runCatching {
+                    repository.save(docToSave, payloads, thumbnail, layerPreviews)
+                }.onSuccess {
+                    if (pendingSaveDocument == docToSave) {
+                        pendingSaveDocument = null
+                        pendingLayerPayloads = emptyMap()
+                        pendingTilesAcknowledgement = null
+                        if (thumbnail != null) pendingThumbnailWebp = null
+                        if (layerPreviews.isNotEmpty()) pendingLayerPreviewsWebp = emptyMap()
+                    }
+                    repository.clearRecovery(docToSave.id)
+                    acknowledge?.invoke()
+                    uiState = uiState.copy(isDirty = false, isSaving = false)
+                }.onFailure { error ->
+                    uiState = uiState.copy(isSaving = false, errorMessage = error.message)
+                }
+            }
         }
     }
 

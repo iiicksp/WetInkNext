@@ -39,6 +39,7 @@ fun AppRoot(viewModel: AppViewModel) {
                     onThumbnailCaptured = viewModel::submitThumbnail,
                     onThumbnailBuildSaved = viewModel::submitThumbnailBuild,
                     onBack = viewModel::closeEditor,
+                    onEditorPause = viewModel::flushPendingSave,
                 )
             } else {
                 LaunchedEffect(currentRoute.projectId) {
