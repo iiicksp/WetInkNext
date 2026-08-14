@@ -783,6 +783,7 @@ class EngineRenderer(
     /** Правка кисти во время штриха больше не отменяет штрих: применяем на следующем DOWN. */
     private fun updateBrush(next: BrushSettings) {
         brushSettings = next.resolved()
+        if (next.renderMode != BrushRenderMode.WET) releaseWetTargets()
         if (!strokeActive) {
             applyBrushToEmitters(brushSettings)
             ColorSpaces.srgb8ToLinear(brushSettings.colorArgb, strokeColorLinear)
@@ -793,6 +794,13 @@ class EngineRenderer(
     private fun applyBrushToEmitters(settings: BrushSettings) {
         stampEmitter.updateSettings(settings)
         capsuleEmitter.updateSettings(settings)
+    }
+
+    /** Frees fluid buffers as soon as a non-WET brush is selected. */
+    private fun releaseWetTargets() {
+        targets.release(wetTargetA)
+        targets.release(wetTargetB)
+        targets.release(wetCompositeTarget)
     }
 
     fun requestState() {
@@ -1406,6 +1414,10 @@ class EngineRenderer(
         transformActive = false
         lassoPoints.clear()
         selectionTouchActive = false
+        // Selection buffers are only needed while a lasso is active.
+        transformTarget.release()
+        cutTarget.release()
+        mergedTarget.release()
         requestRender()
     }
 

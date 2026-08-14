@@ -96,7 +96,11 @@ class AppViewModel(
         viewModelScope.launch {
             uiState = uiState.copy(isLoading = true, errorMessage = null)
             runCatching {
-                val summary = repository.create(request)
+                val clamped = request.copy(
+                    width = request.width.coerceIn(1, com.wetinknext.engine.gl.GlCaps.MAX_CANVAS_DIMENSION),
+                    height = request.height.coerceIn(1, com.wetinknext.engine.gl.GlCaps.MAX_CANVAS_DIMENSION),
+                )
+                val summary = repository.create(clamped)
                 summary to repository.openForEditor(summary.id)
             }.onSuccess { (summary, loadedProject) ->
                 openedProject = loadedProject

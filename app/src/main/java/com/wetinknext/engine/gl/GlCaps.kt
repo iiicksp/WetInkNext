@@ -9,6 +9,13 @@ data class GlCaps(
     val supportsHalfFloatColorBuffer: Boolean,
 ) {
     companion object {
+        /**
+         * Hard cap for new document dimensions. Most mobile GPUs report
+         * GL_MAX_TEXTURE_SIZE >= 8192; the cap keeps a user from creating a
+         * canvas that cannot be rendered even before the GPU reports the
+         * real limit.
+         */
+        const val MAX_CANVAS_DIMENSION = 8192
         fun query(): GlCaps {
             val extensions = GLES30.glGetString(GLES30.GL_EXTENSIONS).orEmpty()
             val declared = extensions.contains("EXT_color_buffer_half_float") ||
