@@ -50,6 +50,7 @@ fun TopToolbar(
     onAnimationClick: () -> Unit,
     onAdjustmentsClick: () -> Unit = {},
     onSettingsClick: () -> Unit,
+    onExportClick: () -> Unit = {},
     onLayersClick: () -> Unit,
     onColorClick: () -> Unit,
 ) {
@@ -74,6 +75,7 @@ fun TopToolbar(
         ToolbarIcon(Icons.Default.Tune, theme, isSelected = isAdjustmentsActive, onClick = onAdjustmentsClick)
         ToolbarIcon(Icons.Default.Layers, theme, onClick = onLayersClick)
         ToolbarIcon(Icons.Default.Settings, theme, contentDescription = "Настройки", onClick = onSettingsClick)
+        ToolbarIcon(Icons.Default.Share, theme, contentDescription = "Экспорт", onClick = onExportClick)
         
         ColorPickerDot(
             color = currentColor,

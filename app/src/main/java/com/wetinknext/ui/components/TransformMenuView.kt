@@ -35,6 +35,7 @@ interface TransformActions {
     fun flipHorizontal()
     fun flipVertical()
     fun setMode(mode: TransformModeUi)
+    fun rotate45()
 }
 
 @Composable
@@ -85,10 +86,10 @@ fun TransformMenuView(
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                ActionIconButton(Icons.Default.Flip, "Отразить Г", theme, enabled = false) { actions.flipHorizontal() }
-                ActionIconButton(Icons.Default.Flip, "Отразить В", theme, iconModifier = Modifier.rotate(90f), enabled = false) { actions.flipVertical() }
-                ActionIconButton(Icons.Default.RotateRight, "Поворот 45", theme, enabled = false) { /* ... */ }
-                ActionIconButton(Icons.Default.FitScreen, "Вписать", theme, enabled = false) { actions.reset() }
+                ActionIconButton(Icons.Default.Flip, "Отразить Г", theme) { actions.flipHorizontal() }
+                ActionIconButton(Icons.Default.Flip, "Отразить В", theme, iconModifier = Modifier.rotate(90f)) { actions.flipVertical() }
+                ActionIconButton(Icons.Default.RotateRight, "Поворот 45", theme) { actions.rotate45() }
+                ActionIconButton(Icons.Default.FitScreen, "Вписать", theme) { actions.reset() }
                 
                 VerticalDivider(modifier = Modifier.height(24.dp).padding(horizontal = 4.dp), color = theme.panelStroke)
 
@@ -106,22 +107,24 @@ fun TransformMenuView(
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Reset
-            TransformRoundButton(Icons.Default.Refresh, "Сбросить", theme, enabled = false) { actions.reset() }
+            TransformRoundButton(Icons.Default.Refresh, "Сбросить", theme) { actions.reset() }
 
             // Cancel
             TransformRoundButton(Icons.Default.Close, "Отмена", theme) { actions.cancel() }
 
             // Apply
             Surface(
-                color = theme.accent.copy(alpha = 0.4f),
+                color = theme.accent,
                 shape = CircleShape,
                 modifier = Modifier.size(48.dp)
             ) {
                 Box(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable { actions.apply() },
                     contentAlignment = Alignment.Center
                 ) {
-                    Icon(Icons.Default.Check, "Применить", tint = Color.White.copy(alpha = 0.4f))
+                    Icon(Icons.Default.Check, "Применить", tint = Color.White)
                 }
             }
         }
@@ -137,7 +140,7 @@ private fun RowScope.TransformModeButton(
     onClick: (TransformModeUi) -> Unit
 ) {
     val isSelected = mode == currentMode
-    val enabled = false // Transform engine not ready
+    val enabled = true
     Box(
         modifier = Modifier
             .weight(1f)

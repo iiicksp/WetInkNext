@@ -196,6 +196,138 @@ class PaintSurfaceView @JvmOverloads constructor(
         requestRender()
     }
 
+    /**
+     * Captures a full-resolution export snapshot on the GL thread and delivers
+     * it on the UI thread. Returns null when a stroke is in progress or the
+     * canvas is empty (the UI should retry after the pen is lifted).
+     */
+    fun requestExportSnapshot(callback: (com.wetinknext.engine.export.ExportSnapshot?) -> Unit) = queueEvent {
+        val snapshot = engineRenderer.requestExportSnapshot()
+        post { callback(snapshot) }
+    }
+
+    /**
+     * Renders a real brush sample (library panel / brush studio) on the GL
+     * thread and delivers the RGBA bitmap on the UI thread. [callback] receives
+     * null when the preview could not be rendered.
+     */
+    fun requestBrushPreview(
+        settings: BrushSettings,
+        callback: (com.wetinknext.engine.brush.BrushPreviewRenderer.PreviewResult?) -> Unit,
+    ) = queueEvent {
+        val result = engineRenderer.renderBrushPreview(settings)
+        post { callback(result) }
+    }
+
+    // ---- Lasso selection + transform proxies ----
+
+    // ---- Animation proxies ----
+
+    fun toggleAnimationActive() = queueEvent {
+        engineRenderer.toggleAnimationActive()
+        requestRender()
+    }
+
+    fun animationTogglePlay() = queueEvent {
+        engineRenderer.animationTogglePlay()
+        requestRender()
+    }
+
+    fun animationSelectFrame(id: Long) = queueEvent {
+        engineRenderer.setAnimationFrame(id)
+        requestRender()
+    }
+
+    fun animationSetDocument(document: com.wetinknext.domain.animation.AnimationDocument) = queueEvent {
+        engineRenderer.setAnimationDocument(document)
+        requestRender()
+    }
+
+    fun animationAddFrame() = queueEvent {
+        engineRenderer.animationAddFrame()
+        requestRender()
+    }
+
+    fun animationDuplicateFrame(id: Long) = queueEvent {
+        engineRenderer.animationDuplicateFrame(id)
+        requestRender()
+    }
+
+    fun animationDeleteFrame(id: Long) = queueEvent {
+        engineRenderer.animationDeleteFrame(id)
+        requestRender()
+    }
+
+    fun animationMoveFrame(id: Long, direction: Int) = queueEvent {
+        engineRenderer.animationMoveFrame(id, direction)
+        requestRender()
+    }
+
+    fun animationSetHold(id: Long, hold: Int) = queueEvent {
+        engineRenderer.animationSetHold(id, hold)
+        requestRender()
+    }
+
+    fun beginSelection(shape: com.wetinknext.engine.selection.SelectionShape) = queueEvent {
+        engineRenderer.beginSelection(shape)
+        requestRender()
+    }
+
+    fun setSelectionShape(shape: com.wetinknext.engine.selection.SelectionShape) = queueEvent {
+        engineRenderer.setSelectionShape(shape)
+        requestRender()
+    }
+
+    fun clearSelection() = queueEvent {
+        engineRenderer.clearSelection()
+        requestRender()
+    }
+
+    fun deleteSelection() = queueEvent {
+        engineRenderer.deleteSelection()
+        requestRender()
+    }
+
+    fun beginTransform() = queueEvent {
+        engineRenderer.beginTransform()
+        requestRender()
+    }
+
+    fun cancelTransform() = queueEvent {
+        engineRenderer.cancelTransform()
+        requestRender()
+    }
+
+    fun applyTransform() = queueEvent {
+        engineRenderer.applyTransform()
+        requestRender()
+    }
+
+    fun setTransformMode(uniform: Boolean) = queueEvent {
+        engineRenderer.setTransformUniform(uniform)
+        requestRender()
+    }
+
+    fun transformResetTransforms() = queueEvent {
+        engineRenderer.transformReset()
+        requestRender()
+    }
+
+    fun transformFlipH() = queueEvent {
+        engineRenderer.transformFlipHorizontal()
+        requestRender()
+    }
+
+    fun transformFlipV() = queueEvent {
+        engineRenderer.transformFlipVertical()
+        requestRender()
+    }
+
+    fun transformRotate45() = queueEvent {
+        engineRenderer.transformRotate45()
+        requestRender()
+    }
+
     fun setBrushColor(color: androidx.compose.ui.graphics.Color) = queueEvent {
         engineRenderer.setBrushColor(color)
         requestRender()

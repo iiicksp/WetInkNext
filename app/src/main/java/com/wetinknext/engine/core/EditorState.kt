@@ -1,5 +1,7 @@
 package com.wetinknext.engine.core
 
+import com.wetinknext.domain.animation.AnimationDocument
+
 /** Immutable state published by the GL thread for Compose to render. */
 data class LayerUiModel(
     val id: Long,
@@ -30,6 +32,9 @@ data class EditorUiState(
     val activeLayerId: Long,
     val ready: Boolean,
     val undoDiagnostics: UndoDiagnostics = UndoDiagnostics(),
+    val animationDocument: AnimationDocument? = null,
+    val animationFrameId: Long = 0L,
+    val animationPlaying: Boolean = false,
 ) {
     companion object {
         val empty = EditorUiState(

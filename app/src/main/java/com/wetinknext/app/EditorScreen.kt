@@ -29,6 +29,7 @@ import com.wetinknext.engine.brush.BrushLibrary
 import com.wetinknext.engine.core.EditorUiState
 import com.wetinknext.engine.core.CanvasBackdropMode
 import com.wetinknext.engine.core.PaintSurfaceView
+import com.wetinknext.data.export.ProjectExporter
 import com.wetinknext.ui.animation.AnimationTimelineToolbar
 import com.wetinknext.ui.color.ColorPanel
 import com.wetinknext.ui.color.GlesColorState
@@ -38,19 +39,30 @@ import com.wetinknext.ui.theme.WetInkTheme
 import com.wetinknext.ui.theme.AppTheme
 import com.wetinknext.ui.theme.AppThemes
 import com.wetinknext.ui.theme.CustomThemeEditor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import android.graphics.Bitmap
+import java.nio.ByteBuffer
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import com.wetinknext.engine.brush.BrushSettings
 import com.wetinknext.ui.theme.ThemeController
 import com.wetinknext.ui.theme.rememberThemeController
 
 private enum class EditorPanel {
     NONE,
     BRUSH,
+    BRUSH_STUDIO,
     LAYERS,
     COLOR,
     SELECTION,
     TRANSFORM,
     ADJUSTMENTS,
     ANIMATION,
+    ANIMATION_SETTINGS,
     SETTINGS,
+    EXPORT,
 }
 
 @Composable
@@ -72,7 +84,18 @@ fun EditorScreen(
     var uiState by remember { mutableStateOf(EditorUiState.empty) }
     var openPanel by remember { mutableStateOf(EditorPanel.NONE) }
     var isEraser by remember { mutableStateOf(false) }
+    var selectionShapeUi by remember { mutableStateOf(SelectionShapeUi.FREEHAND) }
+    var transformMode by remember { mutableStateOf(TransformModeUi.FREEFORM) }
     var documentLoading by remember(projectId) { mutableStateOf(true) }
+
+    val exportScope = rememberCoroutineScope()
+    var exportBusy by remember { mutableStateOf(false) }
+    var exportStatus by remember { mutableStateOf<String?>(null) }
+
+    val brushPreviews = remember { mutableStateMapOf<String, ImageBitmap>() }
+    val previewsInFlight = remember { mutableStateOf<Set<String>>(emptySet()) }
+    var studioBrush by remember { mutableStateOf<BrushPreset?>(null) }
+    var studioOriginal by remember { mutableStateOf<BrushSettings?>(null) }
     
     val colorState = remember { GlesColorState(context) }
     var brushColor by remember { mutableStateOf(Color.Black) }
@@ -124,6 +147,81 @@ fun EditorScreen(
 
     LaunchedEffect(theme.canvasBackdrop, theme.canvasGrid, themeController.backdropMode) {
         surface.setCanvasBackdrop(theme.canvasBackdrop.toArgb(), theme.canvasGrid.toArgb(), themeController.backdropMode)
+    }
+
+    val startExport: (com.wetinknext.ui.components.ExportFormat) -> Unit = { format ->
+        if (!exportBusy && !documentLoading) {
+            exportBusy = true
+            exportStatus = when (format) {
+                com.wetinknext.ui.components.ExportFormat.PNG -> "Экспорт PNG…"
+                com.wetinknext.ui.components.ExportFormat.JPEG -> "Экспорт JPEG…"
+                com.wetinknext.ui.components.ExportFormat.PSD -> "Экспорт PSD…"
+            }
+            surface.requestExportSnapshot { snapshot ->
+                if (snapshot == null) {
+                    exportBusy = false
+                    exportStatus = "Подождите окончания штриха"
+                    return@requestExportSnapshot
+                }
+                exportScope.launch(Dispatchers.IO) {
+                    val location = runCatching {
+                        when (format) {
+                            com.wetinknext.ui.components.ExportFormat.PNG ->
+                                ProjectExporter.exportPng(context, snapshot)
+                            com.wetinknext.ui.components.ExportFormat.JPEG ->
+                                ProjectExporter.exportJpeg(context, snapshot, theme.canvasBackdrop.toArgb())
+                            com.wetinknext.ui.components.ExportFormat.PSD ->
+                                ProjectExporter.exportPsd(context, snapshot)
+                        }
+                    }
+                    withContext(Dispatchers.Main) {
+                        exportBusy = false
+                        exportStatus = location.fold(
+                            onSuccess = { "Сохранено: $it" },
+                            onFailure = { "Ошибка: ${it.message}" },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    fun requestBrushPreview(key: String, settings: BrushSettings, libraryOnce: Boolean) {
+        if (libraryOnce && (brushPreviews.containsKey(key) || previewsInFlight.value.contains(key))) return
+        previewsInFlight.value = previewsInFlight.value + key
+        surface.requestBrushPreview(settings) { result ->
+            previewsInFlight.value = previewsInFlight.value - key
+            if (result != null) {
+                val bitmap = Bitmap.createBitmap(result.width, result.height, Bitmap.Config.ARGB_8888)
+                bitmap.copyPixelsFromBuffer(ByteBuffer.wrap(result.rgba))
+                brushPreviews[key] = bitmap.asImageBitmap()
+            }
+        }
+    }
+
+    fun openBrushStudio(brush: BrushPreset) {
+        studioOriginal = brush.settings
+        studioBrush = brush.copy(settings = brush.settings)
+        openPanel = EditorPanel.BRUSH_STUDIO
+    }
+
+    val transformActions = object : TransformActions {
+        override fun reset() { surface.transformResetTransforms() }
+        override fun cancel() {
+            surface.cancelTransform()
+            openPanel = EditorPanel.NONE
+        }
+        override fun apply() {
+            surface.applyTransform()
+            openPanel = EditorPanel.NONE
+        }
+        override fun flipHorizontal() { surface.transformFlipH() }
+        override fun flipVertical() { surface.transformFlipV() }
+        override fun setMode(mode: TransformModeUi) {
+            transformMode = mode
+            surface.setTransformMode(mode == TransformModeUi.UNIFORM)
+        }
+        override fun rotate45() { surface.transformRotate45() }
     }
 
     WetInkTheme(theme = theme, fontMode = themeController.font) {
@@ -184,6 +282,9 @@ fun EditorScreen(
                         openPanel = if (openPanel == EditorPanel.TRANSFORM) EditorPanel.NONE else EditorPanel.TRANSFORM
                     },
                     onAnimationClick = {
+                        if (openPanel != EditorPanel.ANIMATION) {
+                            surface.toggleAnimationActive()
+                        }
                         openPanel = if (openPanel == EditorPanel.ANIMATION) EditorPanel.NONE else EditorPanel.ANIMATION
                     },
                     onAdjustmentsClick = {
@@ -191,6 +292,9 @@ fun EditorScreen(
                     },
                     onSettingsClick = {
                         openPanel = if (openPanel == EditorPanel.SETTINGS) EditorPanel.NONE else EditorPanel.SETTINGS
+                    },
+                    onExportClick = {
+                        openPanel = if (openPanel == EditorPanel.EXPORT) EditorPanel.NONE else EditorPanel.EXPORT
                     },
                     onLayersClick = {
                         openPanel = if (openPanel == EditorPanel.LAYERS) EditorPanel.NONE else EditorPanel.LAYERS
@@ -248,7 +352,38 @@ fun EditorScreen(
                     brushColor = it
                     surface.setBrushColor(it)
                 },
-                onDismiss = { openPanel = EditorPanel.NONE }
+                onExport = startExport,
+                exportBusy = exportBusy,
+                exportStatus = exportStatus,
+                onDismiss = { openPanel = EditorPanel.NONE },
+                previews = brushPreviews,
+                onBrushPreviewRequest = { brush ->
+                    requestBrushPreview(brush.id, brush.settings, libraryOnce = true)
+                },
+                onStudioOpen = { brush -> openBrushStudio(brush) },
+                studioBrush = studioBrush,
+                studioPreviewBusy = previewsInFlight.value.contains("studio:" + (studioBrush?.id ?: "")),
+                onStudioSettingsChange = { settings ->
+                    studioBrush = studioBrush?.copy(settings = settings)
+                    surface.setBrushSettings(settings)
+                },
+                onStudioPreviewRequest = { settings ->
+                    val key = "studio:" + (studioBrush?.id ?: "")
+                    requestBrushPreview(key, settings, libraryOnce = false)
+                },
+                onStudioReset = {
+                    studioOriginal?.let { original ->
+                        studioBrush = studioBrush?.copy(settings = original)
+                        surface.setBrushSettings(original)
+                    }
+                },
+                onTransformBegin = { surface.beginTransform() },
+                onSetSelectionShape = { shape -> surface.setSelectionShape(shape) },
+                onClearSelection = { surface.clearSelection() },
+                onDeleteSelection = { surface.deleteSelection() },
+                onTransformActions = transformActions,
+                transformMode = transformMode,
+                uiState = uiState
             )
         }
     }
@@ -266,6 +401,24 @@ private fun EditorPanelHost(
     themeController: ThemeController,
     onBrushSelected: (BrushPreset) -> Unit,
     onColorChange: (Color) -> Unit,
+    onExport: (com.wetinknext.ui.components.ExportFormat) -> Unit,
+    exportBusy: Boolean,
+    exportStatus: String?,
+    previews: Map<String, ImageBitmap>,
+    onBrushPreviewRequest: (BrushPreset) -> Unit,
+    onStudioOpen: (BrushPreset) -> Unit,
+    studioBrush: BrushPreset?,
+    studioPreviewBusy: Boolean,
+    onStudioSettingsChange: (BrushSettings) -> Unit,
+    onStudioPreviewRequest: (BrushSettings) -> Unit,
+    onStudioReset: () -> Unit,
+    onTransformBegin: () -> Unit,
+    onSetSelectionShape: (com.wetinknext.engine.selection.SelectionShape) -> Unit,
+    onClearSelection: () -> Unit,
+    onDeleteSelection: () -> Unit,
+    onTransformActions: TransformActions,
+    transformMode: TransformModeUi,
+    uiState: EditorUiState,
     onDismiss: () -> Unit
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
@@ -281,17 +434,50 @@ private fun EditorPanelHost(
                     )
                 }
             }
+
+            EditorPanel.EXPORT -> {
+                Box(modifier = Modifier.align(Alignment.TopEnd).padding(top = 70.dp, end = 16.dp)) {
+                    ExportPanel(
+                        theme = theme,
+                        busy = exportBusy,
+                        status = exportStatus,
+                        onExport = onExport,
+                        onDismiss = onDismiss,
+                    )
+                }
+            }
             
+            EditorPanel.BRUSH_STUDIO -> {
+                val brush = studioBrush
+                if (brush != null) {
+                    Box(modifier = Modifier.align(Alignment.CenterEnd).padding(end = 16.dp)) {
+                        BrushStudio(
+                            preset = brush,
+                            theme = theme,
+                            preview = previews["studio:${brush.id}"],
+                            previewBusy = studioPreviewBusy,
+                            onSettingsChange = onStudioSettingsChange,
+                            onPreviewRequest = onStudioPreviewRequest,
+                            onReset = onStudioReset,
+                            onDismiss = onDismiss,
+                        )
+                    }
+                }
+            }
+
             EditorPanel.BRUSH -> {
                 Box(modifier = Modifier.align(Alignment.CenterStart).padding(start = 72.dp)) {
                     BrushPanel(
                         currentBrush = selectedBrush ?: BrushLibrary.hb_pencil,
                         onBrushSelect = onBrushSelected,
-                        onBrushStudioOpen = { /* TODO */ },
+                        onBrushStudioOpen = { onStudioOpen(it) },
                         theme = theme,
                         onDismiss = onDismiss,
                         onDuplicate = { /* TODO */ },
-                        onDelete = { /* TODO */ }
+                        onDelete = { /* TODO */ },
+                        previews = previews,
+                        previewKey = { it.id },
+                        onRequestPreview = onBrushPreviewRequest
                     )
                 }
             }
@@ -329,9 +515,23 @@ private fun EditorPanelHost(
                 Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp)) {
                     SelectionToolbar(
                         theme = theme,
-                        currentShape = SelectionShapeUi.FREEHAND,
-                        onShapeChange = { /* TODO */ },
-                        onDone = onDismiss
+                        currentShape = selectionShapeUi,
+                        onShapeChange = { shape ->
+                            selectionShapeUi = shape
+                            onSetSelectionShape(
+                                when (shape) {
+                                    SelectionShapeUi.FREEHAND -> com.wetinknext.engine.selection.SelectionShape.FREEHAND
+                                    SelectionShapeUi.RECTANGLE -> com.wetinknext.engine.selection.SelectionShape.RECTANGLE
+                                    SelectionShapeUi.ELLIPSE -> com.wetinknext.engine.selection.SelectionShape.ELLIPSE
+                                }
+                            )
+                        },
+                        onDone = {
+                            onTransformBegin()
+                            openPanel = EditorPanel.TRANSFORM
+                        },
+                        onResetSelection = onClearSelection,
+                        onDeleteSelection = onDeleteSelection,
                     )
                 }
             }
@@ -340,15 +540,8 @@ private fun EditorPanelHost(
                 Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp)) {
                     TransformMenuView(
                         theme = theme,
-                        currentMode = TransformModeUi.UNIFORM,
-                        actions = object : TransformActions {
-                            override fun reset() { /* TODO */ }
-                            override fun cancel() { onDismiss() }
-                            override fun apply() { onDismiss() }
-                            override fun flipHorizontal() { /* TODO */ }
-                            override fun flipVertical() { /* TODO */ }
-                            override fun setMode(mode: TransformModeUi) { /* TODO */ }
-                        }
+                        currentMode = transformMode,
+                        actions = onTransformActions
                     )
                 }
             }
@@ -363,22 +556,41 @@ private fun EditorPanelHost(
                 }
             }
 
+            EditorPanel.ANIMATION_SETTINGS -> {
+                Box(modifier = Modifier.align(Alignment.TopEnd).padding(top = 90.dp, end = 16.dp)) {
+                    AnimationSettingsMenu(
+                        theme = theme,
+                        document = uiState.animationDocument
+                            ?: com.wetinknext.domain.animation.AnimationDocument(enabled = true),
+                        onDocumentChange = { surface.animationSetDocument(it) },
+                        onDismiss = { openPanel = EditorPanel.ANIMATION },
+                    )
+                }
+            }
+
             EditorPanel.ANIMATION -> {
                 Box(modifier = Modifier.align(Alignment.BottomCenter)) {
                     AnimationTimelineToolbar(
                         theme = theme,
-                        document = com.wetinknext.domain.animation.AnimationDocument(enabled = true),
-                        currentFrameId = 0L,
-                        onFrameSelect = {},
-                        onFrameMove = { _, _ -> },
-                        onAddFrame = {},
-                        onDuplicateFrame = {},
-                        onDeleteFrame = {},
-                        onHoldChange = { _, _ -> },
+                        document = uiState.animationDocument
+                            ?: com.wetinknext.domain.animation.AnimationDocument(enabled = true),
+                        currentFrameId = uiState.animationFrameId,
+                        isPlaying = uiState.animationPlaying,
+                        onFrameSelect = { surface.animationSelectFrame(it) },
+                        onFrameMove = { id, dir -> surface.animationMoveFrame(id, dir) },
+                        onAddFrame = { surface.animationAddFrame() },
+                        onDuplicateFrame = { surface.animationDuplicateFrame(it) },
+                        onDeleteFrame = { surface.animationDeleteFrame(it) },
+                        onHoldChange = { id, hold -> surface.animationSetHold(id, hold) },
                         onRoleToggle = { _, _ -> },
                         onAssembleLayers = {},
-                        onLayersClick = {},
-                        onClose = onDismiss
+                        onLayersClick = { openPanel = EditorPanel.LAYERS },
+                        onSettingsClick = { openPanel = EditorPanel.ANIMATION_SETTINGS },
+                        onPlayToggle = { surface.animationTogglePlay() },
+                        onClose = {
+                            surface.toggleAnimationActive()
+                            openPanel = EditorPanel.NONE
+                        }
                     )
                 }
             }

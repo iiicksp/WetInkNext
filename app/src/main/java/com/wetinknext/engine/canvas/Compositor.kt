@@ -72,6 +72,8 @@ class Compositor {
         strokeOpacity: Float,
         firstLayerIndex: Int = 0,
         lastLayerExclusive: Int = Int.MAX_VALUE,
+        activeLayerTextureId: Int = 0,
+        onionTextureId: Int = 0,
     ) {
         val currentProgram = program ?: return
         destination?.bind()
@@ -81,6 +83,19 @@ class Compositor {
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
 
+        // Optional underlay: onion-skin texture of the neighbouring frame.
+        if (onionTextureId != 0) {
+            GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, onionTextureId)
+            GLES30.glUniform1i(uLayerTex, 0)
+            GLES30.glUniform1i(uStrokeActive, 0)
+            GLES30.glUniform1i(uStrokeIsScreenSpace, 0)
+            GLES30.glUniform1i(uStrokeMode, 0)
+            GLES30.glUniform1f(uOpacity, 1f)
+            GLES30.glUniform1f(uStrokeOpacity, 1f)
+            geometry.draw()
+        }
+
         for ((index, layer) in layers.allLayers().withIndex()) {
             if (index < firstLayerIndex || index >= lastLayerExclusive) continue
             if (!layer.created || !layer.isVisible) continue
@@ -88,7 +103,10 @@ class Compositor {
                 (strokeTextureId != 0 || strokeCoverageTextureId != 0)
 
             GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
-            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, layer.target.textureId)
+            val layerTextureId =
+                if (activeLayerTextureId != 0 && layer.id == activeLayerId) activeLayerTextureId
+                else layer.target.textureId
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, layerTextureId)
             GLES30.glUniform1i(uLayerTex, 0)
             if (hasStroke) {
                 val textureUnit = if (strokeIsScreenSpace) GLES30.GL_TEXTURE2 else GLES30.GL_TEXTURE1

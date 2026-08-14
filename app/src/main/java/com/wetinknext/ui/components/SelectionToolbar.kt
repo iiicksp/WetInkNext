@@ -36,6 +36,8 @@ fun SelectionToolbar(
     onShapeChange: (SelectionShapeUi) -> Unit,
     onDone: () -> Unit,
     modifier: Modifier = Modifier,
+    onResetSelection: () -> Unit = {},
+    onDeleteSelection: () -> Unit = {},
 ) {
     val panelBorder = BorderStroke(1.dp, theme.panelStroke)
 
@@ -116,8 +118,8 @@ fun SelectionToolbar(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SelectionRoundButton(Icons.Default.Refresh, "Сбросить", theme, enabled = false)
-            SelectionRoundButton(Icons.Default.Delete, "Удалить", theme, enabled = false)
+            SelectionRoundButton(Icons.Default.Refresh, "Сбросить", theme, onClick = onResetSelection)
+            SelectionRoundButton(Icons.Default.Delete, "Удалить", theme, onClick = onDeleteSelection)
             Surface(
                 color = theme.accent,
                 shape = CircleShape,

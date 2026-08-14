@@ -33,6 +33,7 @@ class WetSimulationRenderer {
     private var uEdgeDarkening = -1
     private var uDeltaTime = -1
     private var uFinalize = -1
+    private var uCoverageColor = -1
 
     private var vaoId = 0
     private var quadBufferId = 0
@@ -55,6 +56,7 @@ class WetSimulationRenderer {
         uEdgeDarkening = GLES30.glGetUniformLocation(p.id, "uEdgeDarkening")
         uDeltaTime = GLES30.glGetUniformLocation(p.id, "uDeltaTime")
         uFinalize = GLES30.glGetUniformLocation(p.id, "uFinalize")
+        uCoverageColor = GLES30.glGetUniformLocation(p.id, "uCoverageColor")
 
         GLES30.glUniform1i(GLES30.glGetUniformLocation(p.id, "uPigmentTex"), 0)
 
@@ -102,6 +104,7 @@ class WetSimulationRenderer {
         motionUvPerSecondX: Float = 0f,
         motionUvPerSecondY: Float = 0f,
         finalize: Boolean = false,
+        coverageColor: FloatArray? = null,
     ) {
         val p = program ?: return
 
@@ -132,6 +135,14 @@ class WetSimulationRenderer {
         GLES30.glUniform1f(uEvaporation, wet.evaporation)
         GLES30.glUniform1f(uEdgeDarkening, wet.edgeDarkening)
         GLES30.glUniform1i(uFinalize, if (finalize) 1 else 0)
+        if (uCoverageColor >= 0 && coverageColor != null && coverageColor.size >= 3) {
+            GLES30.glUniform3f(
+                uCoverageColor,
+                coverageColor[0],
+                coverageColor[1],
+                coverageColor[2],
+            )
+        }
 
         GLES30.glBindVertexArray(vaoId)
         GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)

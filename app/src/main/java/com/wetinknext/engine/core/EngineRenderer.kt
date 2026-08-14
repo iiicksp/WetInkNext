@@ -8,10 +8,16 @@ import androidx.compose.ui.graphics.toArgb
 import com.wetinknext.BuildConfig
 import com.wetinknext.domain.document.LayerDocument
 import com.wetinknext.domain.document.ProjectDocument
+import com.wetinknext.domain.animation.AnimationDocument
+import com.wetinknext.domain.animation.createFramesFromLayers
+import com.wetinknext.domain.animation.normalizedAnimationDocument
+import com.wetinknext.domain.animation.groupLayersIntoFrame
+import com.wetinknext.domain.animation.nextPlaybackIndex
 import com.wetinknext.engine.brush.BrushSettings
 import com.wetinknext.engine.brush.BrushTexture
 import com.wetinknext.engine.brush.LoadedBrushTexture
 import com.wetinknext.engine.brush.BrushRenderMode
+import com.wetinknext.engine.brush.BrushPreviewRenderer
 import com.wetinknext.engine.brush.BlendPolicy
 import com.wetinknext.engine.brush.StrokeRenderMode
 import com.wetinknext.engine.brush.CapsuleEmitter
@@ -30,12 +36,18 @@ import com.wetinknext.engine.canvas.PaintLayer
 import com.wetinknext.engine.canvas.StrokeBlitter
 import com.wetinknext.engine.canvas.NonBuildupStrokeRenderer
 import com.wetinknext.engine.canvas.ScreenPresentRenderer
+import com.wetinknext.engine.export.ExportLayerSnapshot
+import com.wetinknext.engine.export.ExportSnapshot
 import com.wetinknext.engine.gl.CanvasGeometry
 import com.wetinknext.engine.gl.BudgetedTargets
 import com.wetinknext.engine.gl.GlCaps
 import com.wetinknext.engine.gl.GlCheck
 import com.wetinknext.engine.gl.RenderTarget
 import com.wetinknext.engine.gl.RenderTargetBudget
+import com.wetinknext.engine.selection.SelectionMask
+import com.wetinknext.engine.selection.SelectionRenderer
+import com.wetinknext.engine.selection.SelectionShape
+import com.wetinknext.engine.selection.TransformState
 import com.wetinknext.engine.input.InputAction
 import com.wetinknext.engine.input.InputBatch
 import com.wetinknext.engine.input.InputBatchPool
@@ -97,6 +109,47 @@ class EngineRenderer(
     private var screenPresentRenderer: ScreenPresentRenderer? = null
     private var linearTextureBlitter: LinearTextureBlitter? = null
     private val thumbnailCapture = ThumbnailCapture()
+    /** Full-resolution capture used by PNG/JPEG/PSD export; lazy GL init. */
+    private val exportRenderer = ThumbnailRenderer()
+    /** Real brush sample renderer for the library panel and brush studio. */
+    private val brushPreviewRenderer = BrushPreviewRenderer()
+
+    // ---- Lasso selection + transform ----
+    private val selectionRenderer = SelectionRenderer()
+    private val transformTarget = RenderTarget()
+    private val cutTarget = RenderTarget()
+    private val mergedTarget = RenderTarget()
+    private var selectionMask: SelectionMask? = null
+    private var selectionRendererCreated = false
+
+    // ---- Animation ----
+    private var animationDocument: AnimationDocument? = null
+    private var animationActive = false
+    private var animationFrameId = 0L
+    private var animationPlaying = false
+    private var animationLastTickNanos = 0L
+    private val savedLayerVisibility = mutableMapOf<Long, Boolean>()
+    private val onionTarget = RenderTarget()
+    private val onionOpacity: Float get() = animationDocument?.onionSkin?.opacity ?: 0.35f
+    private var selectionMode = SelectionShape.FREEHAND
+    private var selectionActive = false
+    private var selectionTouchActive = false
+    private val lassoPoints = java.util.ArrayList<FloatArray>(24)
+    private val lassoStart = FloatArray(2)
+    private val lastLassoPoint = FloatArray(2)
+    private var transformActive = false
+    private val transformState = TransformState()
+    private val transformAffine = FloatArray(6)
+    private val screenToCanvasMatrix = FloatArray(6)
+    private val canvasPoint = FloatArray(2)
+    private val canvasPointB = FloatArray(2)
+    private var transformGestureActive = false
+    private var transformPrevDistance = 0f
+    private var transformPrevAngle = 0f
+    private var transformTapX = 0f
+    private var transformTapY = 0f
+    private var transformPrevCenterX = 0f
+    private var transformPrevCenterY = 0f
     private val layerThumbnailPaths = mutableMapOf<Long, String>()
     /** Last layer version for which a WebP preview was successfully published. */
     private val layerThumbnailVersions = mutableMapOf<Long, Long>()
@@ -288,7 +341,8 @@ class EngineRenderer(
         inputCapturer.onSecondaryPointerDown = listener
     }
 
-    fun onTouchEvent(event: MotionEvent): Boolean = gestureRouter.onTouchEvent(event)
+    fun onTouchEvent(event: MotionEvent): Boolean =
+        if (selectionActive || transformActive) onSelectionTouch(event) else gestureRouter.onTouchEvent(event)
 
     fun requestCancelFromInput() {
         cancelRequested.set(true)
@@ -857,6 +911,8 @@ class EngineRenderer(
         if (redoGestureRequested.compareAndSet(true, false)) redo()
         if (resetCameraGestureRequested.compareAndSet(true, false)) resetCamera()
         inputBatchesSinceLastFrameLog += drainInput()
+        trackAnimationPlayback()
+        if (animationPlaying) onInputRenderRequested?.invoke()
         if (strokeCommitter.processPendingReadbacks()) publishState()
         if (undoPipeline.process(undoManager)) publishState()
         thumbnailScheduler?.processCompleted()
@@ -915,12 +971,45 @@ class EngineRenderer(
         } else {
             0
         }
-        val isScreenSpace = !isWet && (previewTextureId != 0 || hasNonBuildupPreview && strokeCoveragePreviewTarget.textureId != 0)
+        var activeLayerOverride = 0
+        var finalPreviewTexture = previewTextureId
+        if (transformActive) {
+            val mask = selectionMask
+            val activeLayer = layerStack.activeLayer()
+            if (mask != null && activeLayer != null && activeLayer.created) {
+                mask.uploadIfDirty()
+                ensureSelectionTargets()
+                identityAffine(transformAffine)
+                selectionRenderer.renderMasked(
+                    target = cutTarget,
+                    source = activeLayer.target,
+                    maskTextureId = mask.texture(),
+                    canvasWidth = layerStack.canvasWidth,
+                    canvasHeight = layerStack.canvasHeight,
+                    affine = transformAffine,
+                    cutOut = true,
+                )
+                transformState.buildSourceAffine(transformAffine)
+                selectionRenderer.renderMasked(
+                    target = transformTarget,
+                    source = activeLayer.target,
+                    maskTextureId = mask.texture(),
+                    canvasWidth = layerStack.canvasWidth,
+                    canvasHeight = layerStack.canvasHeight,
+                    affine = transformAffine,
+                    cutOut = false,
+                )
+                activeLayerOverride = cutTarget.textureId
+                finalPreviewTexture = transformTarget.textureId
+            }
+        }
+        val isScreenSpace = !isWet && !transformActive && (finalPreviewTexture != 0 || hasNonBuildupPreview && strokeCoveragePreviewTarget.textureId != 0)
 
         renderDocumentComposite(
             compositor = currentCompositor,
             geometry = currentGeometry,
-            previewTextureId = previewTextureId,
+            previewTextureId = finalPreviewTexture,
+            activeLayerTextureId = activeLayerOverride,
             previewCoverageTextureId = if (hasNonBuildupPreview && strokeCoveragePreviewTarget.textureId != 0) {
                 strokeCoveragePreviewTarget.textureId
             } else {
@@ -947,6 +1036,8 @@ class EngineRenderer(
             viewportWidth = screenWidth,
             viewportHeight = screenHeight,
         )
+
+        renderSelectionOverlay()
         logFrameIfNeeded()
     }
 
@@ -964,6 +1055,7 @@ class EngineRenderer(
         previewMode: StrokeRenderMode,
         strokeOpacity: Float,
         strokeIsScreenSpace: Boolean,
+        activeLayerTextureId: Int = 0,
     ) {
         val activeLayerIndex = layerStack.indexOfLayer(layerStack.activeLayerId)
         val textureBlitter = linearTextureBlitter
@@ -992,6 +1084,8 @@ class EngineRenderer(
                 strokeColorLinear = activeStrokeColorLinear,
                 strokeOpacity = strokeOpacity,
                 canvasToClip = canvasToClipMatrix,
+                activeLayerTextureId = activeLayerTextureId,
+                onionTextureId = onionForPreview(),
             )
             return
         }
@@ -1025,6 +1119,8 @@ class EngineRenderer(
             canvasToClip = canvasToClipMatrix,
             firstLayerIndex = activeLayerIndex,
             lastLayerExclusive = activeLayerIndex + 1,
+            activeLayerTextureId = activeLayerTextureId,
+            onionTextureId = onionForPreview(),
         )
         if (activeLayerIndex < layerStack.count - 1) {
             textureBlitter.blit(upperCompositeTarget.textureId)
@@ -1212,7 +1308,595 @@ class EngineRenderer(
         cancelRequested.set(true)
     }
 
+    /**
+     * Captures the document at full canvas resolution for export. Must run on
+     * the GL thread (call through [PaintSurfaceView.requestExportSnapshot]).
+     *
+     * Returns the visible composite plus one RGBA snapshot per layer, or null
+     * while a stroke is active (a synchronous readback mid-stroke would steal
+     * the frame) or when the canvas is empty. Layer opacity is baked into the
+     * layer pixels, matching what the on-canvas composite shows.
+     */
+    fun requestExportSnapshot(): ExportSnapshot? {
+        GlCheck.checkOnGlThread()
+        if (strokeActive) return null
+        val canvasWidth = layerStack.canvasWidth
+        val canvasHeight = layerStack.canvasHeight
+        if (canvasWidth <= 0 || canvasHeight <= 0) return null
+
+        val composite = exportRenderer.renderProject(layerStack, canvasWidth, canvasHeight)
+        val layerSnapshots = layerStack.allLayers().map { layer ->
+            ExportLayerSnapshot(
+                id = layer.id,
+                name = layer.name,
+                visible = layer.isVisible,
+                width = canvasWidth,
+                height = canvasHeight,
+                rgba = exportRenderer.renderLayer(layer, canvasWidth, canvasHeight),
+            )
+        }
+        return ExportSnapshot(
+            documentName = projectDocument.name,
+            width = canvasWidth,
+            height = canvasHeight,
+            composite = composite,
+            layers = layerSnapshots,
+        )
+    }
+
     /** Must run on the GL thread while the context is still current. */
+    /**
+     * Renders a real brush sample for the library panel / brush studio.
+     * Must run on the GL thread (call through [PaintSurfaceView.requestBrushPreview]).
+     */
+    fun renderBrushPreview(settings: BrushSettings): BrushPreviewRenderer.PreviewResult? {
+        GlCheck.checkOnGlThread()
+        return brushPreviewRenderer.render(settings)
+    }
+
+// ------------------------------------------------- selection + transform
+
+    private fun ensureSelectionMask() {
+        selectionMask?.let { existing ->
+            if (existing.width != layerStack.canvasWidth || existing.height != layerStack.canvasHeight) {
+                existing.release()
+                selectionMask = null
+            }
+        }
+        if (selectionMask == null) {
+            selectionMask = SelectionMask(layerStack.canvasWidth, layerStack.canvasHeight)
+        }
+    }
+
+    private fun ensureSelectionTargets() {
+        if (!selectionRendererCreated) {
+            selectionRenderer.create()
+            selectionRendererCreated = true
+        }
+        val w = layerStack.canvasWidth
+        val h = layerStack.canvasHeight
+        transformTarget.create(w, h, preferHalfFloat = false)
+        cutTarget.create(w, h, preferHalfFloat = false)
+        mergedTarget.create(w, h, preferHalfFloat = false)
+    }
+
+    private fun identityAffine(out: FloatArray) {
+        out[0] = 1f; out[1] = 0f; out[2] = 0f
+        out[3] = 0f; out[4] = 1f; out[5] = 0f
+    }
+
+    fun beginSelection(shape: SelectionShape) {
+        GlCheck.checkOnGlThread()
+        ensureSelectionMask()
+        selectionMode = shape
+        selectionActive = true
+        selectionTouchActive = false
+        requestRender()
+    }
+
+    fun setSelectionShape(shape: SelectionShape) {
+        selectionMode = shape
+    }
+
+    fun clearSelection() {
+        GlCheck.checkOnGlThread()
+        selectionMask?.clear()
+        selectionActive = false
+        transformActive = false
+        lassoPoints.clear()
+        selectionTouchActive = false
+        requestRender()
+    }
+
+    fun deleteSelection() {
+        GlCheck.checkOnGlThread()
+        val mask = selectionMask ?: return
+        val layer = layerStack.activeLayer() ?: return
+        if (mask.isEmpty || !layer.created || transformActive) return
+        ensureSelectionTargets()
+        identityTranspose(transformAffine)
+        selectionRenderer.renderMasked(
+            target = cutTarget,
+            source = layer.target,
+            maskTextureId = mask.texture(),
+            canvasWidth = layerStack.canvasWidth,
+            canvasHeight = layerStack.canvasHeight,
+            affine = transformAffine,
+            cutOut = true,
+        )
+        commitSelectionTarget(cutTarget, layer)
+    }
+
+    fun beginTransform() {
+        GlCheck.checkOnGlThread()
+        val mask = selectionMask ?: return
+        if (mask.isEmpty) return
+        ensureSelectionTargets()
+        val bounds = mask.selectionBounds
+        transformState.pivotX = (bounds[0] + bounds[2]) / 2f
+        transformState.pivotY = (bounds[1] + bounds[3]) / 2f
+        transformState.reset()
+        transformActive = true
+        requestRender()
+    }
+
+    fun cancelTransform() {
+        GlCheck.checkOnGlThread()
+        transformActive = false
+        transformGestureActive = false
+        requestRender()
+    }
+
+    fun applyTransform() {
+        GlCheck.checkOnGlThread()
+        val mask = selectionMask ?: return
+        val layer = layerStack.activeLayer() ?: return
+        if (!transformActive || mask.isEmpty || !layer.created) return
+
+        ensureSelectionTargets()
+        identityAffine(transformAffine)
+
+        // Final result = old layer minus the mask area, then transformed content.
+        mergedTarget.clear(0f, 0f, 0f, 0f)
+        selectionRenderer.renderMasked(
+            target = mergedTarget,
+            source = layer.target,
+            maskTextureId = mask.texture(),
+            canvasWidth = layerStack.canvasWidth,
+            canvasHeight = layerStack.canvasHeight,
+            affine = transformAffine,
+            cutOut = true,
+        )
+        transformState.buildSourceAffine(transformAffine)
+        selectionRenderer.renderMasked(
+            target = mergedTarget,
+            source = layer.target,
+            maskTextureId = mask.texture(),
+            canvasWidth = layerStack.canvasWidth,
+            canvasHeight = layerStack.canvasHeight,
+            affine = transformAffine,
+            cutOut = false,
+        )
+        commitSelectionTarget(mergedTarget, layer)
+        transformActive = false
+        requestRender()
+    }
+
+    fun transformReset() {
+        transformState.reset()
+        requestRender()
+    }
+
+    fun transformFlipHorizontal() {
+        transformState.flipHorizontal()
+        requestRender()
+    }
+
+    fun transformFlipVertical() {
+        transformState.flipVertical()
+        requestRender()
+    }
+
+    fun transformRotate45() {
+        transformState.rotationRad += kotlin.math.PI.toFloat() / 4f
+        requestRender()
+    }
+
+    fun setTransformUniform(uniform: Boolean) {
+        transformState.uniform = uniform
+        if (uniform) transformState.scaleY = transformState.scaleX
+    }
+
+    private fun commitSelectionTarget(target: RenderTarget, layer: PaintLayer) {
+        val blitter = strokeBlitter ?: return
+        val strokeGeometry = geometry ?: return
+        val bounds = intArrayOf(0, 0, layerStack.canvasWidth, layerStack.canvasHeight)
+        strokeCommitter.commit(
+            sourceTarget = target,
+            layer = layer,
+            geometry = strokeGeometry,
+            blitter = blitter,
+            dirtyBounds = bounds,
+            canvasWidth = layerStack.canvasWidth,
+            canvasHeight = layerStack.canvasHeight,
+            opacity = 1f,
+            erase = false,
+            tag = "transform",
+        )
+        publishState()
+    }
+
+    // ------------------------------------------------------- touch routing
+
+    fun onSelectionTouch(event: MotionEvent): Boolean {
+        GlCheck.checkOnGlThread()
+        val mask = selectionMask ?: return false
+        val view = layerStack.camera.snapshot()
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                if (transformActive) {
+                    transformGestureActive = true
+                    transformPrevCenterX = event.x
+                    transformPrevCenterY = event.y
+                    transformPrevDistance = 0f
+                    transformPrevAngle = 0f
+                    view.screenToCanvas(event.x, event.y, canvasPoint)
+                    view.screenToCanvas(event.x, event.y, canvasPointB)
+                } else {
+                    selectionTouchActive = true
+                    view.screenToCanvas(event.x, event.y, canvasPoint)
+                    lassoPoints.clear()
+                    lassoPoints.add(floatArrayOf(canvasPoint[0], canvasPoint[1]))
+                    lastLassoPoint[0] = canvasPoint[0]
+                    lastLassoPoint[1] = canvasPoint[1]
+                    when (selectionMode) {
+                        SelectionShape.FREEHAND -> mask.stampCircle(canvasPoint[0], canvasPoint[1], LASSO_RADIUS)
+                        else -> {
+                            lassoStart[0] = canvasPoint[0]
+                            lassoStart[1] = canvasPoint[1]
+                        }
+                    }
+                }
+                requestRender()
+                return true
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (transformActive) {
+                    handleTransformGestures(event, view)
+                    return true
+                }
+                if (!selectionTouchActive) return true
+                view.screenToCanvas(event.x, event.y, canvasPoint)
+                if (selectionMode == SelectionShape.FREEHAND) {
+                    mask.strokeCapsule(lastLassoPoint[0], lastLassoPoint[1], canvasPoint[0], canvasPoint[1], LASSO_RADIUS)
+                    lastLassoPoint[0] = canvasPoint[0]
+                    lastLassoPoint[1] = canvasPoint[1]
+                }
+                requestRender()
+                return true
+            }
+            MotionEvent.ACTION_UP -> {
+                if (transformActive) {
+                    transformGestureActive = false
+                    return true
+                }
+                if (!selectionTouchActive) return true
+                selectionTouchActive = false
+                when (selectionMode) {
+                    SelectionShape.FREEHAND -> {
+                        if (lassoPoints.size > 1) {
+                            val first = lassoPoints[0]
+                            mask.strokeCapsule(lastLassoPoint[0], lastLassoPoint[1], first[0], first[1], LASSO_RADIUS)
+                        }
+                        mask.fillContour()
+                    }
+                    SelectionShape.RECTANGLE ->
+                        mask.fillRect(lassoStart[0].toInt(), lassoStart[1].toInt(), canvasPoint[0].toInt(), canvasPoint[1].toInt())
+                    SelectionShape.ELLIPSE ->
+                        mask.fillEllipse(lassoStart[0].toInt(), lassoStart[1].toInt(), canvasPoint[0].toInt(), canvasPoint[1].toInt())
+                }
+                mask.uploadIfDirty()
+                lassoPoints.clear()
+                requestRender()
+                return true
+            }
+            MotionEvent.ACTION_CANCEL, MotionEvent.ACTION_POINTER_UP -> {
+                selectionTouchActive = false
+                transformGestureActive = false
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun handleTransformGestures(event: MotionEvent, view: ViewTransform) {
+        val pointerCount = event.pointerCount
+        if (pointerCount >= 2) {
+            val x0 = event.getX(0); val y0 = event.getY(0)
+            val x1 = event.getX(1); val y1 = event.getY(1)
+            val centerX = (x0 + x1) * 0.5f
+            val centerY = (y0 + y1) * 0.5f
+            val distance = kotlin.math.hypot(x1 - x0, y1 - y0)
+            val angle = kotlin.math.atan2(y1 - y0, x1 - x0)
+
+            if (transformGestureActive && transformPrevDistance > 0.001f) {
+                view.screenToCanvas(centerX, centerY, canvasPointB)
+                val deltaCx = canvasPointB[0] - canvasPoint[0]
+                val deltaCy = canvasPointB[1] - canvasPoint[1]
+                val ratio = distance / transformPrevDistance
+                val deltaAngle = angle - transformPrevAngle
+
+                transformState.translateX += deltaCx
+                transformState.translateY += deltaCy
+                if (transformState.uniform) {
+                    transformState.setUniformScale(transformState.scaleX * ratio)
+                } else {
+                    transformState.scaleX *= ratio
+                    transformState.scaleY *= ratio
+                }
+                transformState.rotationRad += deltaAngle
+                view.screenToCanvas(centerX, centerY, canvasPoint)
+            } else {
+                view.screenToCanvas(centerX, centerY, canvasPoint)
+            }
+            transformPrevCenterX = centerX
+            transformPrevCenterY = centerY
+            transformPrevDistance = distance
+            transformPrevAngle = angle
+            transformGestureActive = true
+            requestRender()
+        } else if (pointerCount == 1) {
+            val x = event.x; val y = event.y
+            view.screenToCanvas(x, y, canvasPointB)
+            if (transformGestureActive) {
+                val dx = canvasPointB[0] - canvasPoint[0]
+                val dy = canvasPointB[1] - canvasPoint[1]
+                transformState.translateX += dx
+                transformState.translateY += dy
+            }
+            canvasPoint[0] = canvasPointB[0]
+            canvasPoint[1] = canvasPointB[1]
+            transformGestureActive = true
+            requestRender()
+        }
+    }
+
+    /** Draws the animated marching-ants edge of the current selection on screen. */
+    private fun renderSelectionOverlay() {
+        if (!selectionActive || transformActive) return
+        val mask = selectionMask ?: return
+        if (mask.isEmpty) return
+        mask.uploadIfDirty()
+        if (mask.texture() == 0) return
+        val view = layerStack.camera.snapshot()
+        val det = view.m00 * view.m11 - view.m01 * view.m10
+        if (kotlin.math.abs(det) < 1e-8f) return
+        screenToCanvasMatrix[0] = view.m11 / det
+        screenToCanvasMatrix[1] = -view.m01 / det
+        screenToCanvasMatrix[2] = (-view.m11 * view.translateX + view.m01 * view.translateY) / det
+        screenToCanvasMatrix[3] = -view.m10 / det
+        screenToCanvasMatrix[4] = view.m00 / det
+        screenToCanvasMatrix[5] = (view.m10 * view.translateX - view.m00 * view.translateY) / det
+        selectionRenderer.renderAnts(
+            maskTextureId = mask.texture(),
+            canvasWidth = layerStack.canvasWidth,
+            canvasHeight = layerStack.canvasHeight,
+            screenWidth = screenWidth,
+            screenHeight = screenHeight,
+            screenToCanvas = screenToCanvasMatrix,
+            timeSeconds = System.nanoTime() / 1_000_000_000f,
+        )
+    }
+
+// ---------------------------------------------------------------- animation
+
+    private fun ensureAnimationDocument(): AnimationDocument {
+        val existing = animationDocument
+        if (existing != null && existing.frames.isNotEmpty()) return existing
+        val doc = AnimationDocument(
+            enabled = true,
+            framesPerSecond = 12,
+            frames = createFramesFromLayers(layerStack.allLayers().map { it.id }),
+        )
+        animationDocument = normalizedAnimationDocument(doc, layerStack.allLayers().map { it.id }.toSet())
+        return animationDocument!!
+    }
+
+    /** Advances playback by one frame when the current hold period elapsed. */
+    private fun trackAnimationPlayback() {
+        if (!animationActive || !animationPlaying) return
+        val doc = animationDocument ?: return
+        if (doc.frames.size <= 1) return
+        val now = System.nanoTime()
+        val hold = doc.frames.firstOrNull { it.id == animationFrameId }?.holdFrames ?: 1
+        val periodNanos = (1_000_000_000L / doc.framesPerSecond.coerceIn(1, 60)) * hold
+        if (now - animationLastTickNanos < periodNanos) return
+        val index = doc.frames.indexOfFirst { it.id == animationFrameId }.coerceAtLeast(0)
+        val step = nextPlaybackIndex(index, 1, doc.frames.size, doc.playbackMode)
+        animationLastTickNanos = now
+        if (step.shouldStop) {
+            setAnimationPlaying(false)
+            return
+        }
+        val next = doc.frames.getOrNull(step.nextIndex) ?: return
+        animationFrameId = next.id
+        applyFrameToVisibility(animationFrameId)
+        rebuildOnion()
+        publishState()
+        requestRender()
+    }
+
+    /** Enters/exits animation mode; restores layer visibility on exit. */
+    fun toggleAnimationActive() {
+        GlCheck.checkOnGlThread()
+        if (!animationActive) {
+            savedLayerVisibility.clear()
+            layerStack.allLayers().forEach { savedLayerVisibility[it.id] = it.isVisible }
+            val doc = ensureAnimationDocument()
+            animationActive = true
+            animationFrameId = doc.frames.firstOrNull()?.id ?: 0L
+            applyFrameToVisibility(animationFrameId)
+            rebuildOnion()
+        } else {
+            animationActive = false
+            animationPlaying = false
+            restoreLayerVisibility()
+            onionTarget.release()
+        }
+        publishState()
+        requestRender()
+    }
+
+    fun setAnimationDocument(document: AnimationDocument) {
+        GlCheck.checkOnGlThread()
+        val normalized = normalizedAnimationDocument(
+            document.copy(enabled = true),
+            layerStack.allLayers().map { it.id }.toSet(),
+        )
+        animationDocument = normalized
+        val stillValid = normalized.frames.any { it.id == animationFrameId }
+        if (!stillValid) {
+            animationFrameId = normalized.frames.firstOrNull()?.id ?: 0L
+        }
+        if (animationActive) applyFrameToVisibility(animationFrameId)
+        rebuildOnion()
+        publishState()
+        requestRender()
+    }
+
+    fun setAnimationFrame(frameId: Long) {
+        val doc = animationDocument ?: return
+        if (doc.frames.none { it.id == frameId }) return
+        animationFrameId = frameId
+        if (animationActive) applyFrameToVisibility(frameId)
+        rebuildOnion()
+        publishState()
+        requestRender()
+    }
+
+    fun animationAddFrame() {
+        val doc = ensureAnimationDocument()
+        val activeIds = doc.frames.firstOrNull { it.id == animationFrameId }?.layerIds.orEmpty()
+        val updated = groupLayersIntoFrame(doc, activeIds)
+        animationDocument = normalizedAnimationDocument(updated, layerStack.allLayers().map { it.id }.toSet())
+        val newDoc = animationDocument!
+        animationFrameId = newDoc.frames.firstOrNull()?.id ?: 0L
+        applyFrameToVisibility(animationFrameId)
+        rebuildOnion()
+        publishState()
+        requestRender()
+    }
+
+    fun animationDuplicateFrame(frameId: Long) {
+        val doc = animationDocument ?: return
+        val ids = doc.frames.firstOrNull { it.id == frameId }?.layerIds.orEmpty()
+        animationDocument = normalizedAnimationDocument(
+            groupLayersIntoFrame(doc, ids),
+            layerStack.allLayers().map { it.id }.toSet(),
+        )
+        publishState()
+        requestRender()
+    }
+
+    fun animationDeleteFrame(frameId: Long) {
+        val doc = animationDocument ?: return
+        val remaining = doc.frames.filterNot { it.id == frameId }
+        val updated = if (remaining.isEmpty()) {
+            AnimationDocument(
+                enabled = true,
+                framesPerSecond = doc.framesPerSecond,
+                playbackMode = doc.playbackMode,
+                onionSkin = doc.onionSkin,
+                frames = createFramesFromLayers(layerStack.allLayers().map { it.id }),
+            )
+        } else doc.copy(frames = remaining)
+        animationDocument = normalizedAnimationDocument(updated, layerStack.allLayers().map { it.id }.toSet())
+        if (!animationDocument!!.frames.any { it.id == animationFrameId }) {
+            animationFrameId = animationDocument!!.frames.firstOrNull()?.id ?: 0L
+        }
+        if (animationActive) applyFrameToVisibility(animationFrameId)
+        rebuildOnion()
+        publishState()
+        requestRender()
+    }
+
+    fun animationMoveFrame(frameId: Long, direction: Int) {
+        val doc = animationDocument ?: return
+        val frames = doc.frames.toMutableList()
+        val index = frames.indexOfFirst { it.id == frameId }
+        val target = index + direction
+        if (index < 0 || target < 0 || target >= frames.size) return
+        val moved = frames.removeAt(index)
+        frames.add(target, moved)
+        animationDocument = normalizedAnimationDocument(doc.copy(frames = frames), layerStack.allLayers().map { it.id }.toSet())
+        publishState()
+        requestRender()
+    }
+
+    fun animationSetHold(frameId: Long, hold: Int) {
+        val doc = animationDocument ?: return
+        animationDocument = normalizedAnimationDocument(
+            doc.copy(frames = doc.frames.map { if (it.id == frameId) it.copy(holdFrames = hold.coerceIn(1, 120)) else it }),
+            layerStack.allLayers().map { it.id }.toSet(),
+        )
+        publishState()
+        requestRender()
+    }
+
+    fun animationTogglePlay() {
+        setAnimationPlaying(!animationPlaying)
+    }
+
+    fun setAnimationPlaying(playing: Boolean) {
+        if (animationPlaying == playing) return
+        animationPlaying = playing && animationActive
+        if (animationPlaying) animationLastTickNanos = System.nanoTime()
+        publishState()
+        requestRender()
+    }
+
+    /** Applies the frame's layer membership to visibility; onion rebuild on demand. */
+    private fun applyFrameToVisibility(frameId: Long) {
+        val doc = animationDocument ?: return
+        val frame = doc.frames.firstOrNull { it.id == frameId } ?: return
+        val visibleIds = frame.layerIds.toSet()
+        for (layer in layerStack.allLayers()) {
+            val saved = savedLayerVisibility[layer.id] ?: true
+            layer.isVisible = saved && (layer.id in visibleIds)
+        }
+    }
+
+    private fun rebuildOnion() {
+        val doc = animationDocument ?: return
+        if (!doc.onionSkin.enabled || doc.frames.size < 2) {
+            onionTarget.release()
+            return
+        }
+        val index = doc.frames.indexOfFirst { it.id == animationFrameId }
+        if (index <= 0) {
+            onionTarget.release()
+            return
+        }
+        val prevFrame = doc.frames[index - 1]
+        val activeIds = doc.frames[index].layerIds.toSet()
+        val context = compositor ?: return
+        val geom = geometry ?: return
+        onionTarget.create(layerStack.canvasWidth, layerStack.canvasHeight, preferHalfFloat = false)
+        onionTarget.clear(0f, 0f, 0f, 0f)
+        onionTarget.bind()
+        GLES30.glViewport(0, 0, layerStack.canvasWidth, layerStack.canvasHeight)
+        for (layer in layerStack.allLayers()) {
+            if (layer.id !in prevFrame.layerIds || layer.id in activeIds) continue
+            val saved = layer.opacity
+            layer.opacity = (saved * onionOpacity).coerceIn(0f, 1f)
+            context.renderLayer(geom, layer, canvasToClip = canvasToFboMatrix)
+            layer.opacity = saved
+        }
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+    }
+
+    private fun canTickAnimation(): Boolean = animationActive && animationPlaying
+
     fun releaseGlObjects() {
         checkOnGlThread()
         invalidatePendingUndoHistory()
@@ -1255,6 +1939,20 @@ class EngineRenderer(
         linearTextureBlitter = null
         thumbnailScheduler?.shutdown()
         thumbnailCapture.release()
+        exportRenderer.release()
+        brushPreviewRenderer.release()
+        selectionRenderer.release()
+        transformTarget.release()
+        cutTarget.release()
+        mergedTarget.release()
+        selectionMask?.release()
+        selectionMask = null
+        selectionRendererCreated = false
+        onionTarget.release()
+        animationActive = false
+        animationPlaying = false
+        animationDocument = null
+        savedLayerVisibility.clear()
         documentSession = null
         geometry?.release()
         geometry = null
@@ -1369,7 +2067,7 @@ class EngineRenderer(
                                     out = renderer,
                                     cancel = false,
                                 )
-                                commitStroke(strokeBrush)
+                                commitCapsuleStroke(strokeBrush)
                             }
                             BrushRenderMode.STAMP -> {
                                 stampEmitter.append(batch, dabBuffer)
@@ -1453,6 +2151,7 @@ class EngineRenderer(
                 motionUvPerSecondX = wetMotionUv[0],
                 motionUvPerSecondY = wetMotionUv[1],
                 finalize = true,
+                coverageColor = activeStrokeColorLinear,
             )
             // The wash spreads beyond the source dabs; commit a dilated region so
             // the diffused edge is actually merged. Margin scales with spread.
@@ -1963,6 +2662,9 @@ class EngineRenderer(
                     restoreFailures = undoRestoreFailures,
                     memoryBytes = undoManager.memoryBytes,
                 ),
+                animationDocument = animationDocument,
+                animationFrameId = animationFrameId,
+                animationPlaying = animationPlaying,
             ),
         )
     }
@@ -2284,6 +2986,8 @@ class EngineRenderer(
 
     companion object {
         /** Bounded GL-thread work per frame; ordered input is never dropped. */
+        /** Selection lasso stroke radius in canvas pixels. */
+        private const val LASSO_RADIUS = 5f
         private const val MAX_INPUT_BATCHES_PER_FRAME = 6
         /** Protects the render budget even when one backlog batch is expensive. */
         private const val MAX_INPUT_PROCESS_NANOS = 2_000_000L

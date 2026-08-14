@@ -551,6 +551,66 @@ object ShaderLib {
         }
     """
 
+    const val maskedSampleFragment = """#version 300 es
+        precision highp float;
+        in vec2 vUv;
+        uniform sampler2D uSourceTex;
+        uniform sampler2D uMaskTex;
+        uniform vec2 uCanvasSize;
+        uniform float uAffine[6];   // final canvas px -> source canvas px
+        uniform int uCutOut;        // 1 = source*(1-mask), 0 = source*mask
+        out vec4 fragColor;
+
+        void main() {
+            vec2 canvasPx = vUv * uCanvasSize;
+            vec2 srcPx;
+            srcPx.x = uAffine[0] * canvasPx.x + uAffine[1] * canvasPx.y + uAffine[2];
+            srcPx.y = uAffine[3] * canvasPx.x + uAffine[4] * canvasPx.y + uAffine[5];
+            vec2 srcUv = srcPx / uCanvasSize;
+            float mask = texture(uMaskTex, srcUv).r;
+            vec4 source = texture(uSourceTex, srcUv);
+            float s = uCutOut == 1 ? (1.0 - mask) : mask;
+            fragColor = vec4(source.rgb * s, source.a * s);
+        }
+    """
+
+    const val selectionOverlayFragment = """#version 300 es
+        precision highp float;
+        in vec2 vUv;
+        uniform sampler2D uMaskTex;
+        uniform vec2 uCanvasSize;
+        uniform vec2 uScreenSize;
+        uniform float uTime;
+        uniform vec2 uScreenToCanvas0;
+        uniform vec2 uScreenToCanvas1;
+        uniform vec2 uScreenToCanvas2;
+        out vec4 fragColor;
+
+        void main() {
+            vec2 px = vUv * uScreenSize;
+            vec2 cv;
+            cv.x = uScreenToCanvas0.x * px.x + uScreenToCanvas0.y * px.y + uScreenToCanvas1.x;
+            cv.y = uScreenToCanvas1.y * px.x + uScreenToCanvas2.x * px.y + uScreenToCanvas2.y;
+            vec2 maskUv = cv / uCanvasSize;
+            if (maskUv.x < 0.0 || maskUv.y < 0.0 || maskUv.x > 1.0 || maskUv.y > 1.0) discard;
+            vec2 pxSize = 1.0 / uCanvasSize;
+            float center = texture(uMaskTex, maskUv).r;
+            float eR = texture(uMaskTex, maskUv + vec2(pxSize.x, 0.0)).r;
+            float eL = texture(uMaskTex, maskUv - vec2(pxSize.x, 0.0)).r;
+            float eU = texture(uMaskTex, maskUv + vec2(0.0, pxSize.y)).r;
+            float eD = texture(uMaskTex, maskUv - vec2(0.0, pxSize.y)).r;
+            float edge = step(0.5, center) * (
+                step(0.5, 1.0 - eR) + step(0.5, 1.0 - eL) +
+                step(0.5, 1.0 - eU) + step(0.5, 1.0 - eD));
+            edge = min(edge, 1.0);
+
+            float dash = fract((cv.x + cv.y) * 0.012 + uTime * 1.6);
+            vec3 col = dash < 0.45 ? vec3(0.96) : vec3(0.04);
+            float alpha = edge * 0.85;
+            fragColor = vec4(col * alpha, alpha);
+        }
+    """
+
     const val wetSimFragment = """#version 300 es
         precision highp float;
         in vec2 vUv;
@@ -568,6 +628,7 @@ object ShaderLib {
         uniform float uEvaporation;    // water lost per second
         uniform float uEdgeDarkening;  // extra darkening at the wash edge (finalize)
         uniform int uFinalize;         // 1 = output pigment coverage for the commit
+        uniform vec3 uCoverageColor;   // brush colour of the current stroke (finalize only)
 
         void main(){
             vec2 px = uPixelSize;
@@ -607,21 +668,31 @@ object ShaderLib {
             float grad = clamp(length(vec2(gx, gy)), 0.0, 1.0);
             float rim  = clamp(uCoagulation, 0.0, 1.0) * grad;
             pig = mix(pig, pig * (1.0 + rim * 0.6), rim);
-
-            // ---- evaporation: water dries over real time; thin washes settle ----
-            water = clamp(water - clamp(uEvaporation, 0.0, 1.0) * uDeltaTime, 0.0, 1.0);
-
-            float pigCoverage = clamp(max(max(pig.r, pig.g), pig.b), 0.0, 1.0);
+// ---- evaporation: water dries over real time; thin washes settle ----
+            water = max(water - clamp(uEvaporation, 0.0, 1.0) * uDeltaTime, 0.0);
 
             if (uFinalize == 1) {
-                // Commit pass: alpha becomes pigment coverage so a drying wash is
-                // not faded by leftover water. rgb stays premultiplied pigment.
+                // Commit pass: alpha must be pigment coverage independent of the
+                // paint colour. Premultiplied RGB alone cannot express black
+                // pigment (all channels ~0), so coverage is recovered by
+                // normalising the pigment channels against the brush colour of
+                // this stroke — the fluid buffer only ever holds one colour.
+                // For (near-)black paint the water field is the density proxy:
+                // water is deposited as coverage * wetness.
                 vec3 color = clamp(pig, 0.0, 1.0);
+                float cov = max(max(color.r, color.g), color.b);
+                float maxC = max(max(uCoverageColor.r, uCoverageColor.g), uCoverageColor.b);
+                float density;
+                if (maxC > 0.004) {
+                    density = clamp(cov / maxC, 0.0, 1.0);
+                } else {
+                    density = clamp(water / max(clamp(uWetness, 0.0, 1.0), 0.02), 0.0, 1.0);
+                }
                 float dark = clamp(uEdgeDarkening, 0.0, 1.0);
-                float edge = 1.0 - abs((pigCoverage - 0.5) * 2.0);
+                float edge = 1.0 - abs((density - 0.5) * 2.0);
                 edge = smoothstep(0.0, 1.0, edge) * dark;
                 color = mix(color, color * 0.22, edge);
-                fragColor = vec4(color, pigCoverage);
+                fragColor = vec4(color, density);
             } else {
                 fragColor = vec4(clamp(pig, 0.0, 1.0), water);
             }
