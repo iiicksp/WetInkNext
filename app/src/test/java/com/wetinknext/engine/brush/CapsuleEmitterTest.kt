@@ -93,7 +93,7 @@ class CapsuleEmitterTest {
         emitter.append(batch(InputAction.MOVE, 200f, 30f, 32_000_000L), renderer)
         emitter.finish(renderer, cancel = false)
 
-        org.junit.Assert.assertFalse(renderer.isClosedLoop)
+        org.junit.Assert.assertFalse(emitter.closedLoop)
     }
 
     @Test
@@ -111,6 +111,6 @@ class CapsuleEmitterTest {
         emitter.append(batch(InputAction.MOVE, 5f, 5f, 32_000_000L), renderer)
         emitter.finish(renderer, cancel = false)
 
-        org.junit.Assert.assertTrue(renderer.isClosedLoop)
+        org.junit.Assert.assertTrue(emitter.closedLoop)
     }
 }

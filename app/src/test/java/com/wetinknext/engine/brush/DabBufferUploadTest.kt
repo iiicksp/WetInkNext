@@ -8,7 +8,7 @@ class DabBufferUploadTest {
     fun uploadRangePositionsOnlyTheRequestedPendingDabs() {
         val buffer = DabBuffer(capacity = 4)
         repeat(3) { index ->
-            buffer.add(index.toFloat(), 0f, 1f, 0f, 1f, 1f, 1f)
+            buffer.add(index.toFloat(), 0f, 1f, 0f, 1f, 1f, 1f, 0f, 0f)
         }
 
         buffer.prepareForUpload(firstDab = 1, dabCount = 2)

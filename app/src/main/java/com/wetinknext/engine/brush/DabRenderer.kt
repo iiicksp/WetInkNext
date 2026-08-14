@@ -72,7 +72,7 @@ class DabRenderer(private val maxDabs: Int) {
     /** When true, dabs write the WET fluid buffer (RGB pigment, A = water). */
     private var isWetMode = false
     /** How wet a WET deposit is (0..1). Controls the fluid buffer's water channel. */
-    var wetness = 0f
+    private var wetness = 0f
 
     private var uploadedDabCount = 0
     private val blendController = BlendController()

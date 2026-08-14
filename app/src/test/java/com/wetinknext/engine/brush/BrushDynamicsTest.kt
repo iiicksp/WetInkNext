@@ -58,8 +58,15 @@ class BrushDynamicsTest {
             pressure = 1f,
             tiltX = 0f,
             tiltY = 1f,
+            twistRad = 0f,
+            trajectoryDx = 1f,
+            trajectoryDy = 0f,
             velocityPxPerSecond = 1_200f,
-            random01 = 0.5f,
+            randomSize = 0.5f,
+            randomOpacity = 0.5f,
+            randomRotation = 0.5f,
+            randomScatterRadius = 0f,
+            randomScatterAngle = 0f,
             out = result,
         )
 
@@ -82,9 +89,18 @@ class BrushDynamicsTest {
         val repeated = ResolvedDab()
         val other = ResolvedDab()
 
-        BrushDynamics.resolve(settings, 1f, 0f, 0f, 0f, .75f, first)
-        BrushDynamics.resolve(settings, 1f, 0f, 0f, 0f, .75f, repeated)
-        BrushDynamics.resolve(settings, 1f, 0f, 0f, 0f, .25f, other)
+        BrushDynamics.resolve(
+            settings, 1f, 0f, 0f, 0f, 1f, 0f, 0f,
+            .75f, .75f, .75f, .75f, .75f, first,
+        )
+        BrushDynamics.resolve(
+            settings, 1f, 0f, 0f, 0f, 1f, 0f, 0f,
+            .75f, .75f, .75f, .75f, .75f, repeated,
+        )
+        BrushDynamics.resolve(
+            settings, 1f, 0f, 0f, 0f, 1f, 0f, 0f,
+            .25f, .25f, .25f, .25f, .25f, other,
+        )
 
         assertEquals(first.radius, repeated.radius, 0f)
         assertEquals(first.coverage, repeated.coverage, 0f)
@@ -107,7 +123,7 @@ class BrushDynamicsTest {
 
         assertNotEquals(dab1.radius, dab2.radius)
         assertNotEquals(dab1.coverage, dab2.coverage)
-        assertNotEquals(dab1.rotation, dab2.rotation)
+        assertNotEquals(dab1.rotationRad, dab2.rotationRad)
     }
 
     @Test
