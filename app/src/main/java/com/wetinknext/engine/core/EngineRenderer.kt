@@ -1559,7 +1559,7 @@ class EngineRenderer(
         )
         val margin = (WET_WASH_MARGIN_PX + WET_WASH_MARGIN_SCALE * spread * diag)
             .coerceAtMost(0.12f * diag)
-            .coerceAtLeast(WET_WASH_MARGIN_PX)
+            .coerceAtLeast(WET_WASH_MARGIN_PX.toFloat())
         val m = margin.toInt()
         dirtyBounds[0] = (dirtyBounds[0] - m).coerceAtLeast(0)
         dirtyBounds[1] = (dirtyBounds[1] - m).coerceAtLeast(0)

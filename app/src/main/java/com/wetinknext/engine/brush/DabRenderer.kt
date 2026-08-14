@@ -56,8 +56,8 @@ class DabRenderer(private val maxDabs: Int) {
     private var reverseShape = false
     private var rgbToAlpha = false
     private var falloffType = 1 // DabFalloff.SOFT ordinal
-    private var squareStroke = false
-    private var noAntialias = false
+    var squareStroke = false
+    var noAntialias = false
     private var grainScreenSpace = false
     private var screenWidth = 1080f
     private var screenHeight = 1920f
