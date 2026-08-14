@@ -1085,7 +1085,7 @@ class EngineRenderer(
                 strokeOpacity = strokeOpacity,
                 canvasToClip = canvasToClipMatrix,
                 activeLayerTextureId = activeLayerTextureId,
-                onionTextureId = onionForPreview(),
+                onionTextureId = onionTarget.textureId,
             )
             return
         }
@@ -1120,7 +1120,7 @@ class EngineRenderer(
             firstLayerIndex = activeLayerIndex,
             lastLayerExclusive = activeLayerIndex + 1,
             activeLayerTextureId = activeLayerTextureId,
-            onionTextureId = onionForPreview(),
+            onionTextureId = onionTarget.textureId,
         )
         if (activeLayerIndex < layerStack.count - 1) {
             textureBlitter.blit(upperCompositeTarget.textureId)
@@ -1414,7 +1414,7 @@ class EngineRenderer(
         val layer = layerStack.activeLayer() ?: return
         if (mask.isEmpty || !layer.created || transformActive) return
         ensureSelectionTargets()
-        identityTranspose(transformAffine)
+        transformState.buildSourceAffine(transformAffine)
         selectionRenderer.renderMasked(
             target = cutTarget,
             source = layer.target,
