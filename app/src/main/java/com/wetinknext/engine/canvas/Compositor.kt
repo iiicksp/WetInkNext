@@ -106,7 +106,14 @@ class Compositor {
             }
             GLES30.glUniform1i(uStrokeActive, if (hasStroke) 1 else 0)
             GLES30.glUniform1i(uStrokeIsScreenSpace, if (hasStroke && strokeIsScreenSpace) 1 else 0)
-            GLES30.glUniform1i(uStrokeMode, if (hasStroke && strokeMode == StrokeRenderMode.NON_BUILDUP) 1 else 0)
+            val modeId = if (hasStroke) {
+                when (strokeMode) {
+                    StrokeRenderMode.NORMAL_BUILDUP -> 0
+                    StrokeRenderMode.NON_BUILDUP -> 1
+                    StrokeRenderMode.MULTIPLY -> 2
+                }
+            } else 0
+            GLES30.glUniform1i(uStrokeMode, modeId)
             GLES30.glUniform1i(uStrokeErase, if (hasStroke && strokeErase) 1 else 0)
             GLES30.glUniform1f(uOpacity, layer.opacity.coerceIn(0f, 1f))
             GLES30.glUniform1f(uStrokeOpacity, strokeOpacity.coerceIn(0f, 1f))

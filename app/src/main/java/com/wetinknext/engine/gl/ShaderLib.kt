@@ -46,6 +46,10 @@ object ShaderLib {
                 // Both textures contain premultiplied linear RGBA.
                 if (uStrokeErase == 1) {
                     layer *= (1.0 - stroke.a);
+                } else if (uStrokeMode == 2) {
+                    // Multiply: OpenGL GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA equivalent
+                    layer.rgb = stroke.rgb * layer.rgb + layer.rgb * (1.0 - stroke.a);
+                    layer.a = stroke.a + layer.a * (1.0 - stroke.a);
                 } else {
                     layer = stroke + layer * (1.0 - stroke.a);
                 }
@@ -129,6 +133,7 @@ object ShaderLib {
         uniform sampler2D uGrainTex;
         uniform int uGrainActive;
         uniform float uGrainScale;
+        uniform float uGrainZoomScale;
         uniform int uGrainCanvasLocked;
         uniform int uGrainScreenSpace;
         uniform vec2 uScreenSize;
@@ -146,7 +151,12 @@ object ShaderLib {
         uniform float uSecondaryShapeScale;
         uniform sampler2D uSmudgeTex;
         uniform float uSmudgeStrength;
+        uniform bool uSquareStroke;
+        uniform bool uNoAntialias;
         uniform float uSmudgeLength;
+        uniform vec2 uCanvasSize;
+        uniform float uEdgeDarkening;
+        uniform int uIsWetMode;
         in vec2 vVelocity;
         out vec4 fragColor;
         float luminance(vec3 color) {
@@ -157,6 +167,9 @@ object ShaderLib {
             return mix(1.0 - depth, 1.0, adjusted);
         }
         float dabCoverage(float r, float hardness) {
+            if (uNoAntialias) {
+                return r <= 1.0 ? 1.0 : 0.0;
+            }
             float aa = max(fwidth(r), .001);
             if (uFalloffType == 0) return 1.0 - smoothstep(1.0 - aa, 1.0 + aa, r);
             if (uFalloffType == 1) {
@@ -179,7 +192,7 @@ object ShaderLib {
             return 1.0 - smoothstep(edge, 1.0 + aa, r);
         }
         void main(){
-            float r=length(vLocal);
+            float r = uSquareStroke ? max(abs(vLocal.x), abs(vLocal.y)) : length(vLocal);
             float cov=dabCoverage(r,vHardness);
             if (cov <= 0.0) discard;
 
@@ -210,8 +223,8 @@ object ShaderLib {
                     uv = (gl_FragCoord.xy / uScreenSize.y) * max(uGrainScale, 0.0001);
                 } else {
                     uv = uGrainCanvasLocked == 1
-                        ? vCanvasUv * max(uGrainScale, 0.0001)
-                        : (vLocal * 0.5 + 0.5) * max(uGrainScale, 0.0001);
+                        ? vCanvasUv * max(uGrainScale * uGrainZoomScale, 0.0001)
+                        : (vLocal * 0.5 + 0.5) * max(uGrainScale * uGrainZoomScale, 0.0001);
                 }
                 vec4 grainColor = texture(uGrainTex, uv);
                 float effectiveDepth = uTextureDepth * mix(1.0, 0.2, vCoverage);
@@ -236,22 +249,58 @@ object ShaderLib {
                     color = mix(color, smudgeColor, uSmudgeStrength);
                 }
             }
-            fragColor = vec4(color * a, a);
+            if (uEdgeDarkening > 0.0) {
+                float edge = 1.0 - abs((coverage - 0.5) * 2.0);
+                edge = smoothstep(0.0, 1.0, edge);
+                color = mix(color, color * 0.2, edge * uEdgeDarkening);
+            }
+            // Additive mode for wet brush fluid buffer (RGB is pigment, A is water)
+            if (uIsWetMode == 1) {
+                // In wet mode, we just add the pigment and water to the simulation buffer
+                fragColor = vec4(color * coverage, coverage);
+            } else {
+                fragColor = vec4(color * a, a);
+            }
         }
     """
     const val nonBuildupStrokeFragment = """#version 300 es
+        #extension GL_EXT_shader_framebuffer_fetch : enable
         precision highp float;
 
         in vec2 vUv;
         uniform sampler2D uCoverageTex;
         uniform vec3 uColorLinear;
         uniform float uOpacity;
+        uniform float uEdgeDarkening;
+        uniform int uStrokeMode;
+        
+        #ifdef GL_EXT_shader_framebuffer_fetch
+        layout(location = 0) inout vec4 fragColor;
+        #else
         out vec4 fragColor;
+        #endif
 
         void main() {
             float coverage = texture(uCoverageTex, vUv).a;
             float alpha = coverage * uOpacity;
-            fragColor = vec4(uColorLinear * alpha, alpha);
+            vec3 color = uColorLinear;
+            if (uEdgeDarkening > 0.0) {
+                float edge = 1.0 - abs((coverage - 0.5) * 2.0);
+                edge = smoothstep(0.0, 1.0, edge);
+                color = mix(color, color * 0.2, edge * uEdgeDarkening);
+            }
+            
+            vec4 src = vec4(color * alpha, alpha);
+            
+            #ifdef GL_EXT_shader_framebuffer_fetch
+            if (uStrokeMode == 2) {
+                vec4 dst = fragColor;
+                fragColor = vec4(src.rgb * dst.rgb + src.rgb * (1.0 - dst.a) + dst.rgb * (1.0 - src.a), src.a + dst.a * (1.0 - src.a));
+                return;
+            }
+            #endif
+            
+            fragColor = src;
         }
     """
     const val fullscreenVertex = """#version 300 es
@@ -329,11 +378,13 @@ object ShaderLib {
         uniform sampler2D uGrainTex;
         uniform int uGrainActive;
         uniform float uGrainScale;
+        uniform float uGrainZoomScale;
         uniform int uGrainCanvasLocked;
         uniform float uTextureDepth;
         uniform float uTextureContrast;
         uniform float uFlow;
         uniform int uCoverageOnly;
+        uniform float uEdgeDarkening;
         out vec4 fragColor;
 
         float sdRoundCone(vec2 p, vec2 a, vec2 b, float r1, float r2) {
@@ -371,7 +422,7 @@ object ShaderLib {
 
             float grainFactor = 1.0;
             if (uGrainActive == 1) {
-                vec2 uv = vCanvasUv * max(uGrainScale, 0.0001);
+                vec2 uv = vCanvasUv * max(uGrainScale * uGrainZoomScale, 0.0001);
                 float val = texture(uGrainTex, uv).r;
                 val = clamp((val - 0.5) * uTextureContrast + 0.5, 0.0, 1.0);
                 grainFactor = mix(1.0 - uTextureDepth, 1.0, val);
@@ -389,18 +440,42 @@ object ShaderLib {
             if (uCoverageOnly == 1) {
                 fragColor = vec4(0.0, 0.0, 0.0, coverage);
             } else {
-                fragColor = vec4(uColorLinear * coverage, coverage);
+                vec3 color = uColorLinear;
+                if (uEdgeDarkening > 0.0) {
+                    float edge = 1.0 - abs((coverage - 0.5) * 2.0);
+                    edge = smoothstep(0.0, 1.0, edge);
+                    color = mix(color, color * 0.2, edge * uEdgeDarkening);
+                }
+                fragColor = vec4(color * coverage, coverage);
             }
         }
     """
 
     const val strokeBlitFragment = """#version 300 es
+        #extension GL_EXT_shader_framebuffer_fetch : enable
         precision highp float;
         in vec2 vUv;
         uniform sampler2D uStrokeTex;
         uniform float uOpacity;
+        uniform int uStrokeMode;
+        
+        #ifdef GL_EXT_shader_framebuffer_fetch
+        layout(location = 0) inout vec4 fragColor;
+        #else
         out vec4 fragColor;
-        void main() { fragColor = texture(uStrokeTex, vUv) * uOpacity; }
+        #endif
+        
+        void main() { 
+            vec4 src = texture(uStrokeTex, vUv) * uOpacity;
+            #ifdef GL_EXT_shader_framebuffer_fetch
+            if (uStrokeMode == 2) {
+                vec4 dst = fragColor;
+                fragColor = vec4(src.rgb * dst.rgb + src.rgb * (1.0 - dst.a) + dst.rgb * (1.0 - src.a), src.a + dst.a * (1.0 - src.a));
+                return;
+            }
+            #endif
+            fragColor = src;
+        }
     """
 
     const val ribbonMeshVertex = """#version 300 es
@@ -424,10 +499,12 @@ object ShaderLib {
         uniform vec3 uColorLinear;
         uniform float uFlow;
         uniform int uCoverageOnly;
+        uniform float uEdgeDarkening;
         
         uniform int uGrainActive;
         uniform sampler2D uGrainTex;
         uniform float uGrainScale;
+        uniform float uGrainZoomScale;
         uniform int uGrainScreenSpace;
         uniform vec2 uScreenSize;
         uniform float uTextureContrast;
@@ -448,7 +525,7 @@ object ShaderLib {
           if (uGrainActive == 1) {
               vec2 uv = uGrainScreenSpace == 1 
                   ? (gl_FragCoord.xy / uScreenSize.y) * max(uGrainScale, 0.0001)
-                  : vCanvasUv * max(uGrainScale, 0.0001);
+                  : vCanvasUv * max(uGrainScale * uGrainZoomScale, 0.0001);
               vec4 grainColor = texture(uGrainTex, uv);
               float effectiveDepth = uTextureDepth * mix(1.0, 0.2, vCoverage);
               grainFactor = applyTextureLevels(
@@ -460,8 +537,61 @@ object ShaderLib {
           if (uCoverageOnly == 1) {
             fragColor = vec4(0.0, 0.0, 0.0, coverage);
           } else {
-            fragColor = vec4(uColorLinear * coverage, coverage);
+            vec3 color = uColorLinear;
+            if (uEdgeDarkening > 0.0) {
+                float edge = 1.0 - abs((coverage - 0.5) * 2.0);
+                edge = smoothstep(0.0, 1.0, edge);
+                color = mix(color, color * 0.2, edge * uEdgeDarkening);
+            }
+            fragColor = vec4(color * coverage, coverage);
           }
+        }
+    """
+
+    const val wetSimFragment = """#version 300 es
+        precision highp float;
+        in vec2 vUv;
+        out vec4 fragColor;
+        
+        uniform sampler2D uPigmentTex;
+        uniform vec2 uPixelSize;
+        uniform vec2 uMotion;
+        uniform float uSpread;
+        uniform float uWetness;
+        uniform float uDeltaTime;
+        
+        void main() {
+            vec4 pigment = texture(uPigmentTex, vUv - uMotion * uDeltaTime);
+            
+            vec4 n = texture(uPigmentTex, vUv + vec2(0.0, uPixelSize.y));
+            vec4 s = texture(uPigmentTex, vUv - vec2(0.0, uPixelSize.y));
+            vec4 e = texture(uPigmentTex, vUv + vec2(uPixelSize.x, 0.0));
+            vec4 w = texture(uPigmentTex, vUv - vec2(uPixelSize.x, 0.0));
+            
+            vec4 blurred = (pigment * 4.0 + n + s + e + w) / 8.0;
+            float diffusion = clamp(uSpread * uWetness * pigment.a, 0.0, 1.0);
+            
+            fragColor = mix(pigment, blurred, diffusion);
+        }
+    """
+
+    const val wetCompositeFragment = """#version 300 es
+        precision highp float;
+        in vec2 vUv;
+        uniform sampler2D uFluidTex;
+        out vec4 fragColor;
+        
+        void main() {
+            vec4 fluid = texture(uFluidTex, vUv);
+            // The fluid buffer stores (R,G,B) as premultiplied pigment.
+            // Wetness is in alpha, but for rendering we want pigment coverage.
+            // If the brush was completely dry, we still see pigment.
+            // We can derive alpha from the max component or a separate pigment density channel if we had one.
+            // Since we use RGB for premultiplied pigment, the alpha is max(r,g,b)
+            float pigmentAlpha = clamp(max(max(fluid.r, fluid.g), fluid.b), 0.0, 1.0);
+            
+            // Output standard pre-multiplied RGBA
+            fragColor = vec4(fluid.rgb, pigmentAlpha);
         }
     """
 }

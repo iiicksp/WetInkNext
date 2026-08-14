@@ -41,17 +41,21 @@ class CapsuleStrokeRenderer(
     private var uGrainTex = -1
     private var uGrainActive = -1
     private var uGrainScale = -1
+    private var uGrainZoomScale = -1
     private var uGrainCanvasLocked = -1
     private var uTextureDepth = -1
     private var uTextureContrast = -1
     private var uFlow = -1
     private var uCoverageOnly = -1
+    private var uEdgeDarkening = -1
 
     private var grainTextureId = 0
     private var grainScale = 1f
+    private var grainZoomScale = 1f
     private var grainCanvasLocked = true
     private var textureDepth = 1f
     private var textureContrast = 1f
+    var edgeDarkening = 0f
     // Reserved for a future oriented marker/chisel implementation.
     private var strokeRotation = 0f
 
@@ -120,6 +124,10 @@ class CapsuleStrokeRenderer(
             currentProgram.id,
             "uGrainScale",
         )
+        uGrainZoomScale = GLES30.glGetUniformLocation(
+            currentProgram.id,
+            "uGrainZoomScale",
+        )
         uGrainActive = GLES30.glGetUniformLocation(
             currentProgram.id,
             "uGrainActive",
@@ -143,6 +151,10 @@ class CapsuleStrokeRenderer(
         uCoverageOnly = GLES30.glGetUniformLocation(
             currentProgram.id,
             "uCoverageOnly",
+        )
+        uEdgeDarkening = GLES30.glGetUniformLocation(
+            currentProgram.id,
+            "uEdgeDarkening",
         )
 
         check(uCanvasToClip >= 0) {
@@ -603,6 +615,10 @@ class CapsuleStrokeRenderer(
             uGrainScale,
             grainScale,
         )
+        GLES30.glUniform1f(
+            uGrainZoomScale,
+            grainZoomScale,
+        )
 
         GLES30.glUniform1i(
             uGrainActive,
@@ -629,6 +645,9 @@ class CapsuleStrokeRenderer(
             flow.coerceIn(0f, 1f),
         )
         GLES30.glUniform1i(uCoverageOnly, if (coverageOnly) 1 else 0)
+        if (uEdgeDarkening >= 0) {
+            GLES30.glUniform1f(uEdgeDarkening, edgeDarkening)
+        }
 
         if (grainTextureId != 0) {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
@@ -764,9 +783,14 @@ class CapsuleStrokeRenderer(
     fun clearGrainTexture() {
         grainTextureId = 0
         grainScale = 1f
+        grainZoomScale = 1f
         grainCanvasLocked = true
         textureDepth = 1f
         textureContrast = 1f
+    }
+    
+    fun setGrainZoomScale(scale: Float) {
+        grainZoomScale = scale.coerceAtLeast(0.0001f)
     }
 
     /**
@@ -810,12 +834,14 @@ class CapsuleStrokeRenderer(
         uCanvasSize = -1
         uGrainTex = -1
         uGrainScale = -1
+        uGrainZoomScale = -1
         uGrainActive = -1
         uGrainCanvasLocked = -1
         uTextureDepth = -1
         uTextureContrast = -1
         uFlow = -1
         uCoverageOnly = -1
+        uEdgeDarkening = -1
         grainTextureId = 0
 
         segmentCount = 0

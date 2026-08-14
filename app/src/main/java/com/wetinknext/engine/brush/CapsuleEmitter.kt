@@ -170,10 +170,8 @@ class CapsuleEmitter(
         active = true
         pointerId = sample.pointerId
 
-        stabilizer.strength = (
-            resolvedSettings.smoothing * SMOOTHING_WEIGHT +
-                resolvedSettings.streamline * STREAMLINE_WEIGHT
-            ).coerceIn(0f, 1f)
+        stabilizer.smoothing = resolvedSettings.smoothing.coerceIn(0f, 1f)
+        stabilizer.streamline = resolvedSettings.streamline.coerceIn(0f, 1f)
 
         stabilizer.process(
             timestampNanos = sample.timestampNanos,
@@ -189,8 +187,15 @@ class CapsuleEmitter(
             pressure = filteredPressure,
             tiltX = sample.tiltX,
             tiltY = sample.tiltY,
+            twistRad = sample.orientationRad,
+            trajectoryDx = 0f,
+            trajectoryDy = 0f,
             velocityPxPerSecond = 0f,
-            random01 = 0.5f,
+            randomSize = 0.5f,
+            randomOpacity = 0.5f,
+            randomRotation = 0.5f,
+            randomScatterRadius = 0.5f,
+            randomScatterAngle = 0.5f,
             out = resolvedDab,
         )
         val radius = resolvedDab.radius
@@ -200,6 +205,9 @@ class CapsuleEmitter(
         lastY = y
         lastRadius = radius
         lastCoverage = coverage
+        firstX = x
+        firstY = y
+        firstRadius = radius
         lastOrientation = resolvedDab.rotationRad
         lastTiltX = sample.tiltX
         lastTiltY = sample.tiltY
@@ -262,13 +270,22 @@ class CapsuleEmitter(
             val x = stabilizer.x
             val y = stabilizer.y
             val filteredPressure = pressureFilter.filter(sample.timestampNanos, sample.pressure)
+            val dx = x - lastX
+            val dy = y - lastY
             BrushDynamics.resolve(
                 settings = settings,
                 pressure = filteredPressure,
                 tiltX = sample.tiltX,
                 tiltY = sample.tiltY,
+                twistRad = sample.orientationRad,
+                trajectoryDx = dx,
+                trajectoryDy = dy,
                 velocityPxPerSecond = stabilizer.velocity,
-                random01 = 0.5f,
+                randomSize = 0.5f,
+                randomOpacity = 0.5f,
+                randomRotation = 0.5f,
+                randomScatterRadius = 0.5f,
+                randomScatterAngle = 0.5f,
                 out = resolvedDab,
             )
             val radius = resolvedDab.radius
@@ -410,9 +427,6 @@ class CapsuleEmitter(
         ribbonMeshVersion++
         lastX = x
         lastY = y
-        firstX = x
-        firstY = y
-        firstRadius = radius
         lastRadius = radius
         lastCoverage = coverage
     }

@@ -23,8 +23,15 @@ class BrushDynamicsTest {
             pressure = 0.5f,
             tiltX = 1f,
             tiltY = 0f,
+            twistRad = 0f,
+            trajectoryDx = 1f,
+            trajectoryDy = 0f,
             velocityPxPerSecond = 0f,
-            random01 = 0.5f,
+            randomSize = 0.5f,
+            randomOpacity = 0.5f,
+            randomRotation = 0.5f,
+            randomScatterRadius = 0f,
+            randomScatterAngle = 0f,
             out = result,
         )
 
@@ -84,5 +91,36 @@ class BrushDynamicsTest {
         assertEquals(first.scatterX, repeated.scatterX, 0f)
         assertEquals(first.scatterY, repeated.scatterY, 0f)
         assertNotEquals(first.radius, other.radius, 0.0001f)
+    }
+    @Test
+    fun twoIdenticalBrushesWithDifferentRandomStreamsYieldIndependentValues() {
+        val settings = BrushSettings(
+            sizeJitter = 1f,
+            opacityJitter = 1f,
+            rotationJitter = 1f,
+        )
+        val dab1 = ResolvedDab()
+        BrushDynamics.resolve(settings, 0.5f, 0f, 0f, 0f, 1f, 0f, 0f, 0.1f, 0.2f, 0.3f, 0f, 0f, dab1)
+            
+        val dab2 = ResolvedDab()
+        BrushDynamics.resolve(settings, 0.5f, 0f, 0f, 0f, 1f, 0f, 0f, 0.9f, 0.8f, 0.7f, 0f, 0f, dab2)
+
+        assertNotEquals(dab1.radius, dab2.radius)
+        assertNotEquals(dab1.coverage, dab2.coverage)
+        assertNotEquals(dab1.rotation, dab2.rotation)
+    }
+
+    @Test
+    fun lutChangesPressureShape() {
+        val settings = BrushSettings(
+            baseRadiusPx = 14f,
+            pressureCurve = DynamicsCurve(listOf(0f, 0.2f, 1f)),
+            pressureToSize = true,
+            minSizeRatio = 0f,
+        )
+        val dabMid = ResolvedDab()
+        BrushDynamics.resolve(settings, 0.5f, 0f, 0f, 0f, 1f, 0f, 0f, 0.5f, 0.5f, 0.5f, 0f, 0f, dabMid)
+        
+        assertEquals(14f * 0.2f, dabMid.radius, 0.001f)
     }
 }

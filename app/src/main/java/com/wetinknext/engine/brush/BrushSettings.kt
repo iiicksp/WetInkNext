@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 enum class BrushRenderMode { STAMP, RIBBON, WET }
 
 @Serializable
-enum class BlendPolicy { NORMAL_BUILDUP, NON_BUILDUP }
+enum class BlendPolicy { NORMAL_BUILDUP, NON_BUILDUP, MULTIPLY }
 
 @Serializable
 enum class DabFalloff {
@@ -29,6 +29,33 @@ enum class RibbonCap { ROUND, BUTT }
 enum class RibbonJoin { MITER, ROUND, BEVEL }
 
 @Serializable
+data class DynamicsCurve(
+    val lut: List<Float> = listOf(0f, 1f)
+) {
+    fun resolved(): DynamicsCurve {
+        val points = lut
+            .asSequence()
+            .filter { it.isFinite() }
+            .map { it.coerceIn(0f, 1f) }
+            .take(64)
+            .toList()
+
+        return copy(lut = if (points.size >= 2) points else listOf(0f, 1f))
+    }
+
+    fun evaluate(t: Float): Float {
+        if (lut.isEmpty()) return 0f
+        if (lut.size == 1) return lut[0]
+        val clampedT = t.coerceIn(0f, 1f)
+        val scaledT = clampedT * (lut.size - 1)
+        val index = scaledT.toInt()
+        if (index >= lut.size - 1) return lut.last()
+        val fraction = scaledT - index
+        return lut[index] + (lut[index + 1] - lut[index]) * fraction
+    }
+}
+
+@Serializable
 data class RibbonSettings(
     val minWidthRatio: Float = 0.06f,
     val taperStartPx: Float = 8f,
@@ -40,11 +67,16 @@ data class RibbonSettings(
     val cap: RibbonCap = RibbonCap.ROUND,
     val join: RibbonJoin = RibbonJoin.ROUND,
     val minPointDistancePx: Float = 0.5f,
-    val autoCloseLoop: Boolean = true,
+    val autoCloseLoop: Boolean = false,
 )
 
 @Serializable
-data class WetSettings(val wetness: Float = 0f, val spread: Float = 0f, val bleed: Float = 0f)
+data class WetSettings(
+    val wetness: Float = 0f, 
+    val spread: Float = 0f, 
+    val bleed: Float = 0f,
+    val edgeDarkening: Float = 0f
+)
 
 @Serializable
 data class BrushSettings(
@@ -62,22 +94,25 @@ data class BrushSettings(
     val spacingUsesDiameter: Boolean = true,
     val hardness: Float = 1f,
     val falloff: DabFalloff = DabFalloff.SOFT,
+    val emissionUsesTime: Boolean = false,
+    val emissionRateHz: Float = 30f,
     val colorArgb: Long = 0xFF000000L,
     val smoothing: Float = 0f,
     val streamline: Float = 0f,
-    val antiAliasLevel: Int = 2,
-    val useTempStrokeBuffer: Boolean = false,
     val pressureToSize: Boolean = true,
     val pressureToOpacity: Boolean = true,
+    @Deprecated("Use pressureCurve for new brushes")
     val pressureGamma: Float = 1f,
+    val pressureCurve: DynamicsCurve? = null,
+    val velocityCurve: DynamicsCurve = DynamicsCurve(),
     val minSizeRatio: Float = 0.05f,
-    val emissionUsesTime: Boolean = false,
-    val emissionRateHz: Float = 60f,
     val velocityToSize: Float = 0f,
     val velocityToOpacity: Float = 0f,
     val tiltToSize: Float = 0f,
     val tiltToOpacity: Float = 0f,
     val tiltToRotation: Float = 0f,
+    val followTrajectory: Float = 0f,
+    val twistToRotation: Float = 0f,
     val rotationJitter: Float = 0f,
     val sizeJitter: Float = 0f,
     val opacityJitter: Float = 0f,
@@ -91,8 +126,8 @@ data class BrushSettings(
     val textureContrast: Float = 1f,
     val secondaryShapeAssetPath: String? = null,
     val secondaryShapeScale: Float = 1f,
-    val smudgeStrength: Float = 0f,
-    val smudgeLength: Float = 0.5f,
+    val colorPull: Float = 0f,
+    val colorPullLength: Float = 0.5f,
     val rgbToAlpha: Boolean = false,
     val pixelPen: Boolean = false,
     val squareStroke: Boolean = false,
@@ -106,11 +141,12 @@ data class BrushSettings(
         get() = when (blendPolicy) {
             BlendPolicy.NORMAL_BUILDUP -> StrokeRenderMode.NORMAL_BUILDUP
             BlendPolicy.NON_BUILDUP -> StrokeRenderMode.NON_BUILDUP
+            BlendPolicy.MULTIPLY -> StrokeRenderMode.MULTIPLY
         }
 
     /** Current engine-supported runtime stroke mode for this brush. */
     val effectiveStrokeRenderMode: StrokeRenderMode
-        get() = strokeRenderMode
+        get() = if (strokeRenderMode == StrokeRenderMode.MULTIPLY) StrokeRenderMode.NORMAL_BUILDUP else strokeRenderMode
 
     /** Returns a settings copy safe for every engine path. */
     fun resolved(): BrushSettings {
@@ -118,7 +154,6 @@ data class BrushSettings(
         val safeOpacity = opacity.coerceIn(0f, 1f)
         val safeFlow = flow.coerceIn(0f, 1f)
         val safeSpacing = spacing.coerceIn(0.001f, 4f)
-        val safeGamma = pressureGamma.coerceIn(0.05f, 8f)
         val safeMinSize = minSizeRatio.coerceIn(0.01f, 1f)
 
         val safeVelocityToSize = velocityToSize.coerceIn(0f, 1f)
@@ -126,6 +161,8 @@ data class BrushSettings(
         val safeTiltToSize = tiltToSize.coerceIn(0f, 1f)
         val safeTiltToOpacity = tiltToOpacity.coerceIn(0f, 1f)
         val safeTiltToRotation = tiltToRotation.coerceIn(0f, 1f)
+        val safeFollowTrajectory = followTrajectory.coerceIn(0f, 1f)
+        val safeTwistToRotation = twistToRotation.coerceIn(0f, 1f)
         val safeSizeJitter = sizeJitter.coerceIn(0f, 1f)
         val safeOpacityJitter = opacityJitter.coerceIn(0f, 1f)
         val safeRotationJitter = rotationJitter.coerceIn(0f, 1f)
@@ -134,7 +171,7 @@ data class BrushSettings(
         val safeGrainScale = grainScale.coerceIn(0.0001f, 256f)
         val safeTextureDepth = textureDepth.coerceIn(0f, 1f)
         val safeTextureContrast = textureContrast.coerceIn(0f, 4f)
-        val safeAa = antiAliasLevel.coerceIn(0, 3)
+        
 
         val safeRibbon = ribbon.copy(
             minWidthRatio = ribbon.minWidthRatio.coerceIn(0.01f, 1f),
@@ -155,13 +192,14 @@ data class BrushSettings(
             opacity = safeOpacity,
             flow = safeFlow,
             spacing = safeSpacing,
-            pressureGamma = safeGamma,
             minSizeRatio = safeMinSize,
             velocityToSize = safeVelocityToSize,
             velocityToOpacity = safeVelocityToOpacity,
             tiltToSize = safeTiltToSize,
             tiltToOpacity = safeTiltToOpacity,
             tiltToRotation = safeTiltToRotation,
+            followTrajectory = safeFollowTrajectory,
+            twistToRotation = safeTwistToRotation,
             sizeJitter = safeSizeJitter,
             opacityJitter = safeOpacityJitter,
             rotationJitter = safeRotationJitter,
@@ -169,7 +207,7 @@ data class BrushSettings(
             grainScale = safeGrainScale,
             textureDepth = safeTextureDepth,
             textureContrast = safeTextureContrast,
-            antiAliasLevel = safeAa,
+            
             ribbon = safeRibbon,
             wet = safeWet,
         )

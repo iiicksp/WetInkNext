@@ -883,24 +883,25 @@ class EngineRenderer(
         val hasNonBuildupPreview = strokeActive &&
             frameStrokeBrush?.effectiveStrokeRenderMode == StrokeRenderMode.NON_BUILDUP &&
             (dabBuffer.count > 0 || capsuleEmitter.hasStroke)
+        val isWet = activeStrokeBrush?.renderMode == BrushRenderMode.WET
         val previewTextureId = if (
             strokeActive &&
             !hasNonBuildupPreview &&
-            strokePreviewTarget.textureId != 0 &&
+            (strokePreviewTarget.textureId != 0 || isWet) &&
             (dabBuffer.count > 0 ||
                 (frameStrokeBrush?.renderMode == BrushRenderMode.RIBBON && capsuleEmitter.hasStroke))
         ) {
-            strokePreviewTarget.textureId
+            if (isWet) wetFront.textureId else strokePreviewTarget.textureId
         } else {
             0
         }
+        val isScreenSpace = !isWet && (previewTextureId != 0 || hasNonBuildupPreview && strokeCoveragePreviewTarget.textureId != 0)
+
         renderDocumentComposite(
             compositor = currentCompositor,
             geometry = currentGeometry,
             previewTextureId = previewTextureId,
-            previewCoverageTextureId = if (
-                hasNonBuildupPreview && strokeCoveragePreviewTarget.textureId != 0
-            ) {
+            previewCoverageTextureId = if (hasNonBuildupPreview && strokeCoveragePreviewTarget.textureId != 0) {
                 strokeCoveragePreviewTarget.textureId
             } else {
                 0
@@ -911,6 +912,7 @@ class EngineRenderer(
                 StrokeRenderMode.NORMAL_BUILDUP
             },
             strokeOpacity = frameStrokeBrush?.opacity?.coerceIn(0f, 1f) ?: 1f,
+            strokeIsScreenSpace = isScreenSpace,
         )
 
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
@@ -941,6 +943,7 @@ class EngineRenderer(
         previewCoverageTextureId: Int,
         previewMode: StrokeRenderMode,
         strokeOpacity: Float,
+        strokeIsScreenSpace: Boolean,
     ) {
         val activeLayerIndex = layerStack.indexOfLayer(layerStack.activeLayerId)
         val textureBlitter = linearTextureBlitter
@@ -963,7 +966,7 @@ class EngineRenderer(
                 activeLayerId = layerStack.activeLayerId,
                 strokeTextureId = previewTextureId,
                 strokeCoverageTextureId = previewCoverageTextureId,
-                strokeIsScreenSpace = previewTextureId != 0 || previewCoverageTextureId != 0,
+                strokeIsScreenSpace = strokeIsScreenSpace,
                 strokeMode = previewMode,
                 strokeErase = activeStrokeErase,
                 strokeColorLinear = activeStrokeColorLinear,
@@ -994,7 +997,7 @@ class EngineRenderer(
             activeLayerId = layerStack.activeLayerId,
             strokeTextureId = previewTextureId,
             strokeCoverageTextureId = previewCoverageTextureId,
-            strokeIsScreenSpace = previewTextureId != 0 || previewCoverageTextureId != 0,
+            strokeIsScreenSpace = strokeIsScreenSpace,
             strokeMode = previewMode,
             strokeErase = activeStrokeErase,
             strokeColorLinear = activeStrokeColorLinear,
@@ -1264,27 +1267,48 @@ class EngineRenderer(
                             )
                             ensureStrokeCaches()
 
-                            if (strokeBrush.renderMode == BrushRenderMode.RIBBON) {
-                                capsuleEmitter.begin(
-                                    batch = batch,
-                                    out = checkNotNull(capsuleRenderer),
-                                    strokeSettings = strokeBrush,
-                                )
-                            } else {
-                                dabRenderer?.apply {
-                                    beginStroke()
-                                    setFalloff(strokeBrush.falloff)
-                                    if (strokeBrush.smudgeStrength > 0f) {
-                                        captureSmudgeBackground()
-                                        setSmudge(smudgeTarget.textureId, strokeBrush.smudgeStrength, strokeBrush.smudgeLength)
+                            when (strokeBrush.renderMode) {
+                                BrushRenderMode.RIBBON -> {
+                                    capsuleEmitter.begin(
+                                        batch = batch,
+                                        out = checkNotNull(capsuleRenderer),
+                                        strokeSettings = strokeBrush,
+                                    )
+                                }
+                                BrushRenderMode.STAMP -> {
+                                    dabRenderer?.apply {
+                                        beginStroke()
+                                        setFalloff(strokeBrush.falloff)
+                                        squareStroke = strokeBrush.squareStroke
+                                        noAntialias = strokeBrush.noAntialias
+                                        if (strokeBrush.colorPull > 0f) {
+                                            captureSmudgeBackground()
+                                            setSmudge(smudgeTarget.textureId, strokeBrush.colorPull, strokeBrush.colorPullLength)
+                                        } else {
+                                            clearSmudge()
+                                        }
+                                    }
+                                    stampEmitter.begin(batch, dabBuffer, strokeBrush)
+                                    stampPreviewInitialized = previewAllocated
+                                    if (previewAllocated) drawPendingStampPreview("DOWN")
+                                }
+                                BrushRenderMode.WET -> {
+                                    if (!ensureWetTargets()) {
+                                        resetStroke()
+                                        // cannot return here from inside when/try, so we just break out of stroke logic
+                                        strokeActive = false
                                     } else {
-                                        clearSmudge()
+                                        dabRenderer?.apply {
+                                            beginStroke()
+                                            setFalloff(strokeBrush.falloff)
+                                        squareStroke = strokeBrush.squareStroke
+                                        noAntialias = strokeBrush.noAntialias
+                                        }
+                                        stampEmitter.begin(batch, dabBuffer, strokeBrush)
+                                        drawPendingWet()
+                                        stampPreviewInitialized = previewAllocated
                                     }
                                 }
-                                stampEmitter.begin(batch, dabBuffer, strokeBrush)
-                                stampPreviewInitialized = previewAllocated
-
-                                if (previewAllocated) drawPendingStampPreview("DOWN")
                             }
                         }
                     }
@@ -1292,38 +1316,51 @@ class EngineRenderer(
                     InputAction.MOVE -> if (strokeActive) {
                         val strokeBrush = activeStrokeBrush
                             ?: error("Missing active stroke snapshot")
-                        if (strokeBrush.renderMode == BrushRenderMode.RIBBON) {
-                            capsuleEmitter.append(
-                                batch = batch,
-                                out = checkNotNull(capsuleRenderer),
-                            )
-                        } else {
-                            stampEmitter.append(batch, dabBuffer)
-                            drawPendingStampPreview("MOVE")
+                        when (strokeBrush.renderMode) {
+                            BrushRenderMode.RIBBON -> {
+                                capsuleEmitter.append(
+                                    batch = batch,
+                                    out = checkNotNull(capsuleRenderer),
+                                )
+                            }
+                            BrushRenderMode.STAMP -> {
+                                stampEmitter.append(batch, dabBuffer)
+                                drawPendingStampPreview("MOVE")
+                            }
+                            BrushRenderMode.WET -> {
+                                stampEmitter.append(batch, dabBuffer)
+                                drawPendingWet()
+                            }
                         }
                     }
 
                     InputAction.UP -> if (strokeActive) {
                         val strokeBrush = activeStrokeBrush
                             ?: error("Missing active stroke snapshot")
-                        if (strokeBrush.renderMode == BrushRenderMode.RIBBON) {
-                            val renderer = checkNotNull(capsuleRenderer)
-
-                            // UP должен сначала обработать historical samples,
-                            // затем текущую точку, которую уже положил capturer.
-                            capsuleEmitter.append(
-                                batch = batch,
-                                out = renderer,
-                            )
-                            capsuleEmitter.finish(
-                                out = renderer,
-                                cancel = false,
-                            )
-                            commitCapsuleStroke(strokeBrush)
-                        } else {
-                            stampEmitter.append(batch, dabBuffer)
-                            stampEmitter.finish(dabBuffer, cancel = false)
-                            commitStroke(strokeBrush)
+                        when (strokeBrush.renderMode) {
+                            BrushRenderMode.RIBBON -> {
+                                val renderer = checkNotNull(capsuleRenderer)
+                                capsuleEmitter.append(
+                                    batch = batch,
+                                    out = renderer,
+                                )
+                                capsuleEmitter.finish(
+                                    out = renderer,
+                                    cancel = false,
+                                )
+                                commitStroke(strokeBrush)
+                            }
+                            BrushRenderMode.STAMP -> {
+                                stampEmitter.append(batch, dabBuffer)
+                                stampEmitter.finish(dabBuffer, cancel = false)
+                                commitStroke(strokeBrush)
+                            }
+                            BrushRenderMode.WET -> {
+                                stampEmitter.append(batch, dabBuffer)
+                                drawPendingWet()
+                                stampEmitter.finish(dabBuffer, cancel = false)
+                                commitStroke(strokeBrush)
+                            }
                         }
 
                         resetStroke()
@@ -1382,6 +1419,25 @@ class EngineRenderer(
         if (!computeDirtyPixelBounds(dirtyBounds)) return
         val blitter = strokeBlitter ?: return
         val strokeGeometry = geometry ?: return
+
+        if (strokeBrush.renderMode == BrushRenderMode.WET) {
+            val commitResult = strokeCommitter.commit(
+                sourceTarget = wetFront,
+                layer = layer,
+                geometry = strokeGeometry,
+                blitter = blitter,
+                dirtyBounds = dirtyBounds,
+                canvasWidth = layerStack.canvasWidth,
+                canvasHeight = layerStack.canvasHeight,
+                opacity = 1f,
+                erase = false,
+                strokeMode = StrokeRenderMode.NORMAL_BUILDUP
+            )
+            if (commitResult is com.wetinknext.engine.core.StrokeCommitter.CommitResult.Queued) {
+                publishState()
+            }
+            return
+        }
 
         if (strokeBrush.effectiveStrokeRenderMode == StrokeRenderMode.NON_BUILDUP) {
             val renderer = dabRenderer ?: return
@@ -1452,6 +1508,58 @@ class EngineRenderer(
         strokeDirtyRect.clamp(layerStack.canvasWidth.toFloat(), layerStack.canvasHeight.toFloat())
         strokeDirtyRect.toPixelBounds(out)
         return out[2] > out[0] && out[3] > out[1]
+    }
+
+    private fun ensureWetTargets(): Boolean {
+        val halfFloat = caps?.supportsHalfFloatColorBuffer == true
+        val a = targets.create(
+            target = wetTargetA,
+            label = "wetTargetA",
+            width = layerStack.canvasWidth,
+            height = layerStack.canvasHeight,
+            preferHalfFloat = halfFloat,
+        )
+        val b = targets.create(
+            target = wetTargetB,
+            label = "wetTargetB",
+            width = layerStack.canvasWidth,
+            height = layerStack.canvasHeight,
+            preferHalfFloat = halfFloat,
+        )
+        if (!a || !b) {
+            targets.release(wetTargetA)
+            targets.release(wetTargetB)
+            return false
+        }
+        wetFrontIsA = true
+        wetTargetA.clear(0f, 0f, 0f, 0f)
+        wetTargetB.clear(0f, 0f, 0f, 0f)
+        return true
+    }
+
+    private fun drawPendingWet() {
+        val brush = activeStrokeBrush ?: return
+        val renderer = dabRenderer ?: return
+
+        renderer.drawPendingInto(
+            target = wetFront,
+            width = layerStack.canvasWidth,
+            height = layerStack.canvasHeight,
+            canvasToFbo = canvasToFboMatrix,
+            dabs = dabBuffer,
+            colorLinear = activeStrokeColorLinear,
+            blendPolicy = com.wetinknext.engine.brush.BlendPolicy.NORMAL_BUILDUP,
+            strokeOpacity = 1f,
+        )
+
+        wetSimulationRenderer.step(
+            source = wetFront,
+            destination = wetBack,
+            settings = brush.wet,
+        )
+        wetFrontIsA = !wetFrontIsA
+        
+
     }
 
     private fun drawPendingStampPreview(phase: String) {

@@ -7,6 +7,11 @@ object GlCheck {
     @Volatile
     private var glThread: Thread? = null
 
+    val hasFramebufferFetch: Boolean by lazy {
+        android.opengl.GLES30.glGetString(android.opengl.GLES30.GL_EXTENSIONS)?.contains("GL_EXT_shader_framebuffer_fetch") == true
+    }
+
+
     fun setGlThread(thread: Thread) {
         glThread = thread
     }

@@ -2,6 +2,7 @@ package com.wetinknext.engine.core
 
 import android.opengl.GLES30
 import android.util.Log
+import com.wetinknext.engine.brush.StrokeRenderMode
 import com.wetinknext.BuildConfig
 import com.wetinknext.engine.canvas.PaintLayer
 import com.wetinknext.engine.canvas.NonBuildupStrokeRenderer
@@ -56,6 +57,7 @@ class StrokeCommitter(
      * is in canvas coordinates and is expanded to a deterministic tile set.
      */
     fun commit(
+        sourceTarget: com.wetinknext.engine.gl.RenderTarget = strokeTarget,
         layer: PaintLayer,
         geometry: CanvasGeometry,
         blitter: StrokeBlitter,
@@ -64,11 +66,12 @@ class StrokeCommitter(
         canvasHeight: Int,
         opacity: Float,
         erase: Boolean = false,
+        strokeMode: StrokeRenderMode = StrokeRenderMode.NORMAL_BUILDUP,
         operation: UndoOperationType = UndoOperationType.TILE_EDIT,
         tag: String = "stroke",
     ): CommitResult {
         GlCheck.checkOnGlThread()
-        if (!layer.created || layer.isLocked || strokeTarget.textureId == 0) return CommitResult.Rejected
+        if (!layer.created || layer.isLocked || sourceTarget.textureId == 0) return CommitResult.Rejected
         if (dirtyBounds.size < 4) return CommitResult.Rejected
 
         expandBoundsToTiles(dirtyBounds, canvasWidth, canvasHeight)
@@ -79,12 +82,13 @@ class StrokeCommitter(
         blitter.blit(
             layer = layer.target,
             geometry = geometry,
-            strokeTextureId = strokeTarget.textureId,
+            strokeTextureId = sourceTarget.textureId,
             canvasToFbo = canvasToFbo,
             width = canvasWidth,
             height = canvasHeight,
             opacity = opacity.coerceIn(0f, 1f),
             erase = erase,
+            strokeMode = strokeMode,
         )
         layer.version++
         val after = readbackQueue.issue(layer.target, dirtyBounds)
@@ -110,6 +114,8 @@ class StrokeCommitter(
         canvasHeight: Int,
         opacity: Float,
         erase: Boolean = false,
+        strokeMode: StrokeRenderMode = StrokeRenderMode.NORMAL_BUILDUP,
+        edgeDarkening: Float = 0f,
     ): CommitResult {
         GlCheck.checkOnGlThread()
         if (!layer.created || layer.isLocked || coverageTarget.textureId == 0 || colorLinear.size < 3) return CommitResult.Rejected
@@ -130,6 +136,8 @@ class StrokeCommitter(
             height = canvasHeight,
             opacity = opacity,
             erase = erase,
+            strokeMode = strokeMode,
+            edgeDarkening = edgeDarkening,
         )
         layer.version++
         val after = readbackQueue.issue(layer.target, dirtyBounds)
@@ -144,31 +152,7 @@ class StrokeCommitter(
     }
 
     /** Clears one editable layer and records the full canvas as one undo transaction. */
-    fun clearLayer(
-        layer: PaintLayer,
-        canvasWidth: Int,
-        canvasHeight: Int,
-    ): CommitResult {
-        GlCheck.checkOnGlThread()
-        if (!layer.created || layer.isLocked) return CommitResult.Rejected
-
-        val fullBounds = intArrayOf(0, 0, canvasWidth, canvasHeight)
-        logLargeUndoReadback(layer, fullBounds)
-        val before = readbackQueue.issue(layer.target, fullBounds)
-        layer.clear()
-        layer.version++
-        pendingTransactions += PendingTransaction(
-            layer = layer,
-            before = before,
-            after = null,
-            operation = UndoOperationType.CLEAR_LAYER,
-            tag = "clear_layer",
-        )
-        return CommitResult.Queued
-    }
-
-    /** Moves completed GPU captures into compression/persistence on the GL thread. */
-    fun processPendingReadbacks(): Boolean {
+        fun processPendingReadbacks(): Boolean {
         GlCheck.checkOnGlThread()
         readbackQueue.poll()
         var changed = false

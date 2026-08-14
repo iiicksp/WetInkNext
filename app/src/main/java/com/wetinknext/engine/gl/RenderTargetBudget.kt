@@ -50,7 +50,7 @@ class RenderTargetBudget(
     }
 
     companion object {
-        const val DEFAULT_MAX_BYTES = 320L * 1024L * 1024L
+        const val DEFAULT_MAX_BYTES = 384L * 1024L * 1024L
         private const val MEBIBYTE = 1024L * 1024L
         private const val TAG = "GpuBudget"
     }

@@ -15,6 +15,12 @@ class CapsuleStrokeRendererTest {
     }
 
     @Test
+    fun capsuleShaderSupportsEdgeDarkening() {
+        assertTrue(ShaderLib.capsuleFragment.contains("uniform float uEdgeDarkening"))
+        assertTrue(ShaderLib.capsuleFragment.contains("uEdgeDarkening > 0.0"))
+    }
+
+    @Test
     fun initiallyEmpty() {
         val renderer = CapsuleStrokeRenderer(maxSegments = 100)
         assertTrue(renderer.isEmpty)

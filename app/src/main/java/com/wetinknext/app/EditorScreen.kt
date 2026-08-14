@@ -76,7 +76,7 @@ fun EditorScreen(
     
     val colorState = remember { GlesColorState(context) }
     var brushColor by remember { mutableStateOf(Color.Black) }
-    var selectedBrush by remember { mutableStateOf<BrushPreset?>(BrushLibrary.pencil6B) }
+    var selectedBrush by remember { mutableStateOf<BrushPreset?>(BrushLibrary.hb_pencil) }
 
     val layerState = remember { LayerState() }
 
@@ -118,8 +118,8 @@ fun EditorScreen(
     // Initialize state
     LaunchedEffect(surface) {
         surface.requestState()
-        surface.applyBrushPreset(BrushLibrary.pencil6B)
-        selectedBrush = BrushLibrary.pencil6B
+        surface.applyBrushPreset(BrushLibrary.hb_pencil)
+        selectedBrush = BrushLibrary.hb_pencil
     }
 
     LaunchedEffect(theme.canvasBackdrop, theme.canvasGrid, themeController.backdropMode) {
@@ -285,7 +285,7 @@ private fun EditorPanelHost(
             EditorPanel.BRUSH -> {
                 Box(modifier = Modifier.align(Alignment.CenterStart).padding(start = 72.dp)) {
                     BrushPanel(
-                        currentBrush = selectedBrush ?: BrushLibrary.pencil6B,
+                        currentBrush = selectedBrush ?: BrushLibrary.hb_pencil,
                         onBrushSelect = onBrushSelected,
                         onBrushStudioOpen = { /* TODO */ },
                         theme = theme,

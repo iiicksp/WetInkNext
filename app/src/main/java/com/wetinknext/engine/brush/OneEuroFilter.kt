@@ -3,7 +3,7 @@ package com.wetinknext.engine.brush
 import kotlin.math.PI
 import kotlin.math.sqrt
 
-class OneEuroFilter(private var minCutoff: Float = 1.6f, private var beta: Float = 0.25f, private var dCutoff: Float = 1f) {
+class OneEuroFilter(var minCutoff: Float = 1.6f, var beta: Float = 0.25f, private var dCutoff: Float = 1f) {
     private var initialized = false; private var lastTimestampNanos = 0L
     private var x = 0f; private var y = 0f; private var dx = 0f; private var dy = 0f
     fun reset() { initialized = false; lastTimestampNanos = 0L; x = 0f; y = 0f; dx = 0f; dy = 0f }

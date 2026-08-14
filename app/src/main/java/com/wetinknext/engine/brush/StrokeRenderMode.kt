@@ -10,4 +10,5 @@ package com.wetinknext.engine.brush
 enum class StrokeRenderMode {
     NORMAL_BUILDUP,
     NON_BUILDUP,
+    MULTIPLY,
 }

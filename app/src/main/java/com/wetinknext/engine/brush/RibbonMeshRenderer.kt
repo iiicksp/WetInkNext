@@ -23,10 +23,12 @@ class RibbonMeshRenderer {
     private var uColorLinear = -1
     private var uCoverageOnly = -1
     private var uFlow = -1
+    private var uEdgeDarkening = -1
 
     private var uGrainActive = -1
     private var uGrainTex = -1
     private var uGrainScale = -1
+    private var uGrainZoomScale = -1
     private var uGrainScreenSpace = -1
     private var uScreenSize = -1
     private var uTextureContrast = -1
@@ -39,6 +41,7 @@ class RibbonMeshRenderer {
 
     private var grainTextureId = 0
     private var grainScale = 1f
+    private var grainZoomScale = 1f
     private var grainScreenSpace = false
     private var textureDepth = 1f
     private var textureContrast = 1f
@@ -57,10 +60,12 @@ class RibbonMeshRenderer {
         uColorLinear = GLES30.glGetUniformLocation(p.id, "uColorLinear")
         uFlow = GLES30.glGetUniformLocation(p.id, "uFlow")
         uCoverageOnly = GLES30.glGetUniformLocation(p.id, "uCoverageOnly")
+        uEdgeDarkening = GLES30.glGetUniformLocation(p.id, "uEdgeDarkening")
 
         uGrainActive = GLES30.glGetUniformLocation(p.id, "uGrainActive")
         uGrainTex = GLES30.glGetUniformLocation(p.id, "uGrainTex")
         uGrainScale = GLES30.glGetUniformLocation(p.id, "uGrainScale")
+        uGrainZoomScale = GLES30.glGetUniformLocation(p.id, "uGrainZoomScale")
         uGrainScreenSpace = GLES30.glGetUniformLocation(p.id, "uGrainScreenSpace")
         uScreenSize = GLES30.glGetUniformLocation(p.id, "uScreenSize")
         uTextureContrast = GLES30.glGetUniformLocation(p.id, "uTextureContrast")
@@ -120,8 +125,13 @@ class RibbonMeshRenderer {
     fun clearGrainTexture() {
         grainTextureId = 0
         grainScale = 1f
+        grainZoomScale = 1f
         textureDepth = 1f
         textureContrast = 1f
+    }
+    
+    fun setGrainZoomScale(scale: Float) {
+        grainZoomScale = scale.coerceAtLeast(0.0001f)
     }
 
     fun setScreenDimensions(width: Float, height: Float) {
@@ -141,6 +151,7 @@ class RibbonMeshRenderer {
         color: FloatArray,
         flow: Float,
         coverageOnly: Boolean,
+        edgeDarkening: Float = 0f,
     ): Boolean {
         val vertexFloats = mesh.vertices.size
         val indexCount = mesh.indices.size
@@ -163,9 +174,11 @@ class RibbonMeshRenderer {
         GLES30.glUniform3fv(uColorLinear, 1, color, 0)
         GLES30.glUniform1i(uCoverageOnly, if (coverageOnly) 1 else 0)
         GLES30.glUniform1f(uFlow, flow.coerceIn(0f, 1f))
+        if (uEdgeDarkening >= 0) GLES30.glUniform1f(uEdgeDarkening, edgeDarkening)
 
         GLES30.glUniform1i(uGrainActive, if (grainTextureId != 0) 1 else 0)
         GLES30.glUniform1f(uGrainScale, grainScale)
+        GLES30.glUniform1f(uGrainZoomScale, grainZoomScale)
         GLES30.glUniform1i(uGrainScreenSpace, if (grainScreenSpace) 1 else 0)
         GLES30.glUniform2f(uScreenSize, screenWidth, screenHeight)
         GLES30.glUniform1f(uTextureDepth, textureDepth)

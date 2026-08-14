@@ -30,7 +30,10 @@ class StampEmitter(initialSettings: BrushSettings) {
 
     private var lastDabX = 0f
     private var lastDabY = 0f
-    private var randomState = 0x13579BDF
+    private var sizeRandomState = 0
+    private var opacityRandomState = 0
+    private var rotationRandomState = 0
+    private var scatterRandomState = 0
     private var strokeSeed = 0
     private var carriedDistance = 0f
     private var movedDuringStroke = false
@@ -67,11 +70,15 @@ class StampEmitter(initialSettings: BrushSettings) {
     ) {
         reset()
         strokeSeed++
-        randomState = 0x13579BDF xor strokeSeed
+        sizeRandomState = 0x13579BDF xor strokeSeed
+        opacityRandomState = 0x2468ACE0 xor strokeSeed
+        rotationRandomState = 0x811C9DC5.toInt() xor strokeSeed
+        scatterRandomState = 0x31415926 xor strokeSeed
         val resolvedSettings = strokeSettings.resolved()
         this.strokeSettings = resolvedSettings
         if (batch.isEmpty()) return
-        stabilizer.strength = (resolvedSettings.smoothing * .7f + resolvedSettings.streamline * .3f).coerceIn(0f, 1f)
+        stabilizer.smoothing = resolvedSettings.smoothing.coerceIn(0f, 1f)
+        stabilizer.streamline = resolvedSettings.streamline.coerceIn(0f, 1f)
         val s = batch.samples[0]
         active = true
         pointerId = s.pointerId
@@ -92,6 +99,17 @@ class StampEmitter(initialSettings: BrushSettings) {
         p2x = lastX; p2y = lastY; p2p = lastPressure
         p3x = lastX; p3y = lastY; p3p = lastPressure
         pointCount = 1
+
+        addDab(
+            x = lastX,
+            y = lastY,
+            pressure = lastPressure,
+            tiltX = lastTiltX,
+            tiltY = lastTiltY,
+            velocity = lastVelocity,
+            orientationRad = lastOrientationRad,
+            out = out,
+        )
     }
 
     fun append(batch: InputBatch, out: DabBuffer) {
@@ -126,7 +144,7 @@ class StampEmitter(initialSettings: BrushSettings) {
         if (settings.smoothing > .0001f && pointCount >= 3) {
             flushSmoothedTail(out)
         }
-        if (!movedDuringStroke || carriedDistance > .001f) {
+        if (carriedDistance > .001f) {
             addDab(
                 x = lastX,
                 y = lastY,
@@ -214,10 +232,15 @@ class StampEmitter(initialSettings: BrushSettings) {
                 pressure = probePressure,
                 tiltX = probeTiltX,
                 tiltY = probeTiltY,
+                twistRad = orientationRad,
+                trajectoryDx = dx,
+                trajectoryDy = dy,
                 velocityPxPerSecond = lastVelocity + (velocity - lastVelocity) * tProbe,
-                // This probe only selects spacing. Do not consume the stroke
-                // RNG before the dab that will actually be emitted.
-                random01 = 0.5f,
+                randomSize = 0.5f,
+                randomOpacity = 0.5f,
+                randomRotation = 0.5f,
+                randomScatterRadius = 0.5f,
+                randomScatterAngle = 0.5f,
                 out = resolvedDab,
             )
 
@@ -304,20 +327,36 @@ class StampEmitter(initialSettings: BrushSettings) {
         out: DabBuffer,
     ) {
         val settings = activeSettings()
+        
+        var dabX = x
+        var dabY = y
+        if (settings.pixelPen) {
+            dabX = kotlin.math.round(dabX)
+            dabY = kotlin.math.round(dabY)
+        }
+
+        val dx = dabX - lastDabX
+        val dy = dabY - lastDabY
+
         BrushDynamics.resolve(
             settings = settings,
             pressure = pressure,
             tiltX = tiltX,
             tiltY = tiltY,
+            twistRad = orientationRad,
+            trajectoryDx = dx,
+            trajectoryDy = dy,
             velocityPxPerSecond = velocity,
-            random01 = nextRandom01(),
+            randomSize = nextSizeRandom(),
+            randomOpacity = nextOpacityRandom(),
+            randomRotation = nextRotationRandom(),
+            randomScatterRadius = nextScatterRandom(),
+            randomScatterAngle = nextScatterRandom(),
             out = resolvedDab,
         )
 
-        val dx = x - lastDabX
-        val dy = y - lastDabY
-        lastDabX = x
-        lastDabY = y
+        lastDabX = dabX
+        lastDabY = dabY
 
         out.add(
             x = x + resolvedDab.scatterX,
@@ -332,10 +371,21 @@ class StampEmitter(initialSettings: BrushSettings) {
         )
     }
 
-    /** Deterministic LCG: undo/replay never depends on a global random source. */
-    private fun nextRandom01(): Float {
-        randomState = randomState * 1_664_525 + 1_013_904_223
-        return ((randomState ushr 8) and 0x00FF_FFFF) / 16_777_216f
+    private fun nextSizeRandom(): Float {
+        sizeRandomState = sizeRandomState * 1_664_525 + 1_013_904_223
+        return ((sizeRandomState ushr 8) and 0x00FF_FFFF) / 16_777_216f
+    }
+    private fun nextOpacityRandom(): Float {
+        opacityRandomState = opacityRandomState * 1_664_525 + 1_013_904_223
+        return ((opacityRandomState ushr 8) and 0x00FF_FFFF) / 16_777_216f
+    }
+    private fun nextRotationRandom(): Float {
+        rotationRandomState = rotationRandomState * 1_664_525 + 1_013_904_223
+        return ((rotationRandomState ushr 8) and 0x00FF_FFFF) / 16_777_216f
+    }
+    private fun nextScatterRandom(): Float {
+        scatterRandomState = scatterRandomState * 1_664_525 + 1_013_904_223
+        return ((scatterRandomState ushr 8) and 0x00FF_FFFF) / 16_777_216f
     }
 
 }

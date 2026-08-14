@@ -13,6 +13,7 @@ class StrokeBlitter {
     private var uCanvasSize = -1
     private var uStrokeTex = -1
     private var uOpacity = -1
+    private var uStrokeMode = -1
 
     fun create() {
         release()
@@ -23,7 +24,8 @@ class StrokeBlitter {
         uCanvasSize = GLES30.glGetUniformLocation(p.id, "uCanvasSize")
         uStrokeTex = GLES30.glGetUniformLocation(p.id, "uStrokeTex")
         uOpacity = GLES30.glGetUniformLocation(p.id, "uOpacity")
-        check(uCanvasToClip >= 0 && uCanvasSize >= 0 && uStrokeTex >= 0 && uOpacity >= 0) {
+        uStrokeMode = GLES30.glGetUniformLocation(p.id, "uStrokeMode")
+        check(uCanvasToClip >= 0 && uCanvasSize >= 0 && uStrokeTex >= 0 && uOpacity >= 0 && uStrokeMode >= 0) {
             "StrokeBlitter uniforms missing"
         }
     }
@@ -37,6 +39,7 @@ class StrokeBlitter {
         height: Int,
         opacity: Float,
         erase: Boolean = false,
+        strokeMode: com.wetinknext.engine.brush.StrokeRenderMode = com.wetinknext.engine.brush.StrokeRenderMode.NORMAL_BUILDUP,
     ) {
         val p = program ?: return
         if (strokeTextureId == 0) return
@@ -48,6 +51,12 @@ class StrokeBlitter {
         if (erase) {
             // Erase premultiplied RGB and alpha by the rendered stroke coverage.
             GLES30.glBlendFunc(GLES30.GL_ZERO, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        } else if (strokeMode == com.wetinknext.engine.brush.StrokeRenderMode.MULTIPLY) {
+            if (com.wetinknext.engine.gl.GlCheck.hasFramebufferFetch) {
+                GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ZERO)
+            } else {
+                GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+            }
         } else {
             GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
         }
@@ -58,6 +67,14 @@ class StrokeBlitter {
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, strokeTextureId)
         GLES30.glUniform1i(uStrokeTex, 0)
         GLES30.glUniform1f(uOpacity, opacity.coerceIn(0f, 1f))
+        
+        val modeId = if (erase) 0 else when (strokeMode) {
+            com.wetinknext.engine.brush.StrokeRenderMode.NORMAL_BUILDUP -> 0
+            com.wetinknext.engine.brush.StrokeRenderMode.NON_BUILDUP -> 1
+            com.wetinknext.engine.brush.StrokeRenderMode.MULTIPLY -> 2
+        }
+        GLES30.glUniform1i(uStrokeMode, modeId)
+
         geometry.draw()
         GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
         GLES30.glDisable(GLES30.GL_BLEND)
@@ -68,6 +85,6 @@ class StrokeBlitter {
     fun release() {
         program?.release()
         program = null
-        uCanvasToClip = -1; uCanvasSize = -1; uStrokeTex = -1; uOpacity = -1
+        uCanvasToClip = -1; uCanvasSize = -1; uStrokeTex = -1; uOpacity = -1; uStrokeMode = -1
     }
 }

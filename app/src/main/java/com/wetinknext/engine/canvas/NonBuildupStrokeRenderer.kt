@@ -14,6 +14,8 @@ class NonBuildupStrokeRenderer {
     private var uCoverageTex = -1
     private var uColorLinear = -1
     private var uOpacity = -1
+    private var uEdgeDarkening = -1
+    private var uStrokeMode = -1
 
     fun create() {
         release()
@@ -25,7 +27,9 @@ class NonBuildupStrokeRenderer {
         uCoverageTex = GLES30.glGetUniformLocation(p.id, "uCoverageTex")
         uColorLinear = GLES30.glGetUniformLocation(p.id, "uColorLinear")
         uOpacity = GLES30.glGetUniformLocation(p.id, "uOpacity")
-        check(uCanvasToClip >= 0 && uCanvasSize >= 0 && uCoverageTex >= 0 && uColorLinear >= 0 && uOpacity >= 0) {
+        uEdgeDarkening = GLES30.glGetUniformLocation(p.id, "uEdgeDarkening")
+        uStrokeMode = GLES30.glGetUniformLocation(p.id, "uStrokeMode")
+        check(uCanvasToClip >= 0 && uCanvasSize >= 0 && uCoverageTex >= 0 && uColorLinear >= 0 && uOpacity >= 0 && uEdgeDarkening >= 0 && uStrokeMode >= 0) {
             "NonBuildupStrokeRenderer uniforms missing"
         }
     }
@@ -40,6 +44,8 @@ class NonBuildupStrokeRenderer {
         height: Int,
         opacity: Float,
         erase: Boolean = false,
+        strokeMode: com.wetinknext.engine.brush.StrokeRenderMode = com.wetinknext.engine.brush.StrokeRenderMode.NORMAL_BUILDUP,
+        edgeDarkening: Float = 0f,
     ) {
         val p = program ?: return
         if (coverageTextureId == 0 || colorLinear.size < 3) return
@@ -49,7 +55,14 @@ class NonBuildupStrokeRenderer {
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendEquation(GLES30.GL_FUNC_ADD)
         if (erase) {
+            // Erase premultiplied RGB and alpha by the rendered stroke coverage.
             GLES30.glBlendFunc(GLES30.GL_ZERO, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+        } else if (strokeMode == com.wetinknext.engine.brush.StrokeRenderMode.MULTIPLY) {
+            if (com.wetinknext.engine.gl.GlCheck.hasFramebufferFetch) {
+                GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ZERO)
+            } else {
+                GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
+            }
         } else {
             GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
         }
@@ -61,6 +74,15 @@ class NonBuildupStrokeRenderer {
         GLES30.glUniform1i(uCoverageTex, 1)
         GLES30.glUniform3f(uColorLinear, colorLinear[0], colorLinear[1], colorLinear[2])
         GLES30.glUniform1f(uOpacity, opacity.coerceIn(0f, 1f))
+        if (uEdgeDarkening >= 0) GLES30.glUniform1f(uEdgeDarkening, edgeDarkening)
+
+        val modeId = if (erase) 0 else when (strokeMode) {
+            com.wetinknext.engine.brush.StrokeRenderMode.NORMAL_BUILDUP -> 0
+            com.wetinknext.engine.brush.StrokeRenderMode.NON_BUILDUP -> 1
+            com.wetinknext.engine.brush.StrokeRenderMode.MULTIPLY -> 2
+        }
+        GLES30.glUniform1i(uStrokeMode, modeId)
+
         geometry.draw()
         GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)

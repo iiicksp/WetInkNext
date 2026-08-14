@@ -20,6 +20,7 @@ class DabRenderer(private val maxDabs: Int) {
     private var uGrainTex = -1
     private var uGrainActive = -1
     private var uGrainScale = -1
+    private var uGrainZoomScale = -1
     private var uGrainCanvasLocked = -1
     private var uTextureDepth = -1
     private var uTextureContrast = -1
@@ -39,9 +40,13 @@ class DabRenderer(private val maxDabs: Int) {
     private var uSmudgeTex = -1
     private var uSmudgeStrength = -1
     private var uSmudgeLength = -1
+    private var uEdgeDarkening = -1
+    private var uSquareStroke = -1
+    private var uNoAntialias = -1
 
     private var grainTextureId = 0
     private var grainScale = 1f
+    private var grainZoomScale = 1f
     private var grainCanvasLocked = true
     private var textureDepth = 1f
     private var textureContrast = 1f
@@ -54,6 +59,11 @@ class DabRenderer(private val maxDabs: Int) {
     private var screenHeight = 1920f
     private var secondaryShapeTextureId = 0
     private var secondaryShapeScale = 1f
+
+    private var smudgeTextureId = 0
+    private var smudgeStrength = 0f
+    private var smudgeLength = 0f
+    var edgeDarkening = 0f
 
     private var uploadedDabCount = 0
     private val blendController = BlendController()
@@ -74,6 +84,7 @@ class DabRenderer(private val maxDabs: Int) {
         uGrainTex = GLES30.glGetUniformLocation(currentProgram.id, "uGrainTex")
         uGrainActive = GLES30.glGetUniformLocation(currentProgram.id, "uGrainActive")
         uGrainScale = GLES30.glGetUniformLocation(currentProgram.id, "uGrainScale")
+        uGrainZoomScale = GLES30.glGetUniformLocation(currentProgram.id, "uGrainZoomScale")
         uGrainCanvasLocked = GLES30.glGetUniformLocation(currentProgram.id, "uGrainCanvasLocked")
         uTextureDepth = GLES30.glGetUniformLocation(currentProgram.id, "uTextureDepth")
         uTextureContrast = GLES30.glGetUniformLocation(currentProgram.id, "uTextureContrast")
@@ -92,6 +103,9 @@ class DabRenderer(private val maxDabs: Int) {
         uSmudgeTex = GLES30.glGetUniformLocation(currentProgram.id, "uSmudgeTex")
         uSmudgeStrength = GLES30.glGetUniformLocation(currentProgram.id, "uSmudgeStrength")
         uSmudgeLength = GLES30.glGetUniformLocation(currentProgram.id, "uSmudgeLength")
+        uEdgeDarkening = GLES30.glGetUniformLocation(currentProgram.id, "uEdgeDarkening")
+        uSquareStroke = GLES30.glGetUniformLocation(currentProgram.id, "uSquareStroke")
+        uNoAntialias = GLES30.glGetUniformLocation(currentProgram.id, "uNoAntialias")
 
         check(
             uCanvasToClip >= 0 && uColorLinear >= 0 && uStrokeOpacity >= 0 &&
@@ -153,6 +167,7 @@ class DabRenderer(private val maxDabs: Int) {
         colorLinear: FloatArray,
         blendPolicy: BlendPolicy,
         strokeOpacity: Float = 1f,
+        
     ) {
         if (dabs.count == 0) return
         require(colorLinear.size >= 3)
@@ -173,6 +188,7 @@ class DabRenderer(private val maxDabs: Int) {
                 blendPolicy = blendPolicy,
                 strokeOpacity = strokeOpacity,
                 coverageOnly = false,
+                isWetMode = isWetMode,
             )
         } finally {
             dabs.finishUpload()
@@ -252,14 +268,20 @@ class DabRenderer(private val maxDabs: Int) {
         smudgeTextureId = 0
         smudgeStrength = 0f
         smudgeLength = 0f
+        edgeDarkening = 0f
     }
 
     fun clearGrainTexture() {
         grainTextureId = 0
         grainScale = 1f
+        grainZoomScale = 1f
         grainCanvasLocked = true
         textureDepth = 1f
         textureContrast = 1f
+    }
+    
+    fun setGrainZoomScale(scale: Float) {
+        grainZoomScale = scale.coerceAtLeast(0.0001f)
     }
 
     /** Sets a tip mask sampled once per dab in local dab coordinates. */
@@ -310,6 +332,7 @@ class DabRenderer(private val maxDabs: Int) {
                 blendPolicy = BlendPolicy.NON_BUILDUP,
                 strokeOpacity = 1f,
                 coverageOnly = true,
+                isWetMode = false,
             )
         } finally {
             dabs.finishUpload()
@@ -325,6 +348,7 @@ class DabRenderer(private val maxDabs: Int) {
         colorLinear: FloatArray,
         blendPolicy: BlendPolicy,
         strokeOpacity: Float = 1f,
+        
     ) {
         val first = uploadedDabCount
         val count = dabs.count - first
@@ -346,6 +370,7 @@ class DabRenderer(private val maxDabs: Int) {
                 blendPolicy = blendPolicy,
                 strokeOpacity = strokeOpacity,
                 coverageOnly = false,
+                isWetMode = isWetMode,
             )
             uploadedDabCount = dabs.count
         } finally {
@@ -368,6 +393,7 @@ class DabRenderer(private val maxDabs: Int) {
         colorLinear: FloatArray,
         blendPolicy: BlendPolicy,
         strokeOpacity: Float = 1f,
+        
     ) {
         val first = uploadedDabCount
         val count = dabs.count - first
@@ -389,6 +415,7 @@ class DabRenderer(private val maxDabs: Int) {
                 blendPolicy = blendPolicy,
                 strokeOpacity = strokeOpacity,
                 coverageOnly = false,
+                isWetMode = false,
             )
             uploadedDabCount = dabs.count
         } finally {
@@ -426,6 +453,7 @@ class DabRenderer(private val maxDabs: Int) {
                 blendPolicy = BlendPolicy.NON_BUILDUP,
                 strokeOpacity = 1f,
                 coverageOnly = true,
+                isWetMode = false,
             )
             uploadedDabCount = dabs.count
         } finally {
@@ -447,6 +475,7 @@ class DabRenderer(private val maxDabs: Int) {
         blendPolicy: BlendPolicy,
         strokeOpacity: Float,
         coverageOnly: Boolean,
+        isWetMode: Boolean,
     ) {
         val currentProgram = program ?: return
         target.bind()
@@ -476,6 +505,7 @@ class DabRenderer(private val maxDabs: Int) {
         )
         GLES30.glUniform1i(uGrainActive, if (grainTextureId != 0) 1 else 0)
         GLES30.glUniform1f(uGrainScale, grainScale)
+        GLES30.glUniform1f(uGrainZoomScale, grainZoomScale)
         GLES30.glUniform1i(uGrainCanvasLocked, if (grainCanvasLocked) 1 else 0)
         GLES30.glUniform1f(uTextureDepth, textureDepth)
         GLES30.glUniform1f(uTextureContrast, textureContrast)
@@ -492,6 +522,9 @@ class DabRenderer(private val maxDabs: Int) {
 
         GLES30.glUniform1f(uSmudgeStrength, smudgeStrength)
         GLES30.glUniform1f(uSmudgeLength, smudgeLength)
+        if (uEdgeDarkening >= 0) GLES30.glUniform1f(uEdgeDarkening, edgeDarkening)
+        if (uSquareStroke >= 0) GLES30.glUniform1i(uSquareStroke, if (squareStroke) 1 else 0)
+        if (uNoAntialias >= 0) GLES30.glUniform1i(uNoAntialias, if (noAntialias) 1 else 0)
 
         if (grainTextureId != 0) {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE2)
