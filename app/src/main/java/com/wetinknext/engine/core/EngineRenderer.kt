@@ -2145,15 +2145,15 @@ class EngineRenderer(
     }
 
     private fun captureSmudgeBackground() {
-        val compositor = currentCompositor ?: return
-        val geom = currentGeometry ?: return
+        val comp = compositor ?: return
+        val geom = geometry ?: return
         smudgeTarget.clear(0f, 0f, 0f, 0f)
         smudgeTarget.bind()
         GLES30.glViewport(0, 0, smudgeTarget.width, smudgeTarget.height)
         GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
         GLES30.glDisable(GLES30.GL_BLEND)
 
-        compositor.render(
+        comp.render(
             destination = smudgeTarget,
             geometry = geom,
             layers = layerStack,
@@ -2161,7 +2161,7 @@ class EngineRenderer(
             strokeTextureId = 0,
             strokeCoverageTextureId = 0,
             strokeIsScreenSpace = false,
-            strokeMode = StrokeRenderMode.NORMAL,
+            strokeMode = StrokeRenderMode.NORMAL_BUILDUP,
             strokeErase = false,
             strokeColorLinear = activeStrokeColorLinear,
             strokeOpacity = 1f,

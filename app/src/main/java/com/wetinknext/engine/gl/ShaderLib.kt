@@ -589,8 +589,11 @@ object ShaderLib {
             float wMean = (w.a + e.a + n.a + s.a + 0.5 * (nw.a + ne.a + sw.a + se.a)) / 6.0;
             vec3  pMean = (w.rgb + e.rgb + n.rgb + s.rgb + 0.5 * (nw.rgb + ne.rgb + sw.rgb + se.rgb)) / 6.0;
 
-            // Wetter regions bleed further; a wet brush loads the whole wash.
-            float waterRate = clamp(uSpread * (0.35 + 0.65 * wet.a) * (0.5 + 0.5 * clamp(uWetness, 0.0, 1.0)), 0.0, 1.0);
+            // Frame-rate-independent diffusion: per-second rate -> per-step blend
+            // via 1-exp(-k*dt), so 120 fps washes at the same speed as 30 fps.
+            const float DIFFUSION_RATE_HZ = 2.0;
+            float rateHz = uSpread * (0.35 + 0.65 * wet.a) * (0.5 + 0.5 * clamp(uWetness, 0.0, 1.0)) * DIFFUSION_RATE_HZ;
+            float waterRate = 1.0 - exp(-rateHz * uDeltaTime);
 
             // Water spreads at waterRate; pigment is carried by a fraction of that
             // movement (bleed), though it still diffuses a little on its own so

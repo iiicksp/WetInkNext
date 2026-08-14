@@ -35,6 +35,8 @@ object WetSimMath {
     private const val MIN_DT = 1f / 240f
     private const val MAX_DT = 1f / 10f
     private const val MAX_MOTION_UV = 8f
+    /** Diffusion rate in 1/s; keeps the wash speed independent of deltaSeconds. */
+    private const val DIFFUSION_RATE_HZ = 2f
 
     /**
      * One advection-diffusion-coagulation-evaporation step, applied in place.
@@ -118,11 +120,10 @@ object WetSimMath {
                 val pMeanG = (lG + gR + uG + dG + 0.5f * (nwgR + negR + swgR + segR)) / 6f
                 val pMeanB = (rbB + bR + nbB + sbB + 0.5f * (nwbB + nebB + swbB + sebB)) / 6f
 
-                // ---- diffusion: wetter regions bleed further ----
-                val waterRate = min(
-                    1f,
-                    spread * (0.35f + 0.65f * wetW) * (0.5f + 0.5f * wetness),
-                )
+                // ---- diffusion: wetter regions bleed further; rate is per-second,
+                // blended frame-rate-independently via 1-exp(-k*dt) ----
+                val rateHz = spread * (0.35f + 0.65f * wetW) * (0.5f + 0.5f * wetness) * DIFFUSION_RATE_HZ
+                val waterRate = 1f - kotlin.math.exp(-rateHz * dt)
                 val water = wetW + (wMean - wetW) * waterRate
 
                 val pigBlend = waterRate * (0.25f + 0.75f * bleed) // mix(0.25, 1.0, bleed)

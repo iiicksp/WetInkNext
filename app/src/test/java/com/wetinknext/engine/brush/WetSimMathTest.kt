@@ -145,4 +145,29 @@ class WetSimMathTest {
         assertEquals(0f, s.coagulation, 0f)
         assertEquals(1f, s.evaporation, 0f)
     }
+
+    @Test
+    fun `diffusion is independent of the frame rate`() {
+        fun waterField(): WetSimMath.Field {
+            val w = FloatArray(64)
+            w[3 * 8 + 3] = 1f
+            w[4 * 8 + 4] = 0.6f
+            return field(water = w)
+        }
+        val s = WetSettings(wetness = 0.5f, spread = 0.5f)
+
+        // 60 fps, 1 second of wash time.
+        val sixtieth = waterField()
+        for (i in 0 until 60) WetSimMath.step(sixtieth, s, 1f / 60f)
+
+        // 30 fps, the same 1 second of wash time.
+        val thirtieth = waterField()
+        for (i in 0 until 30) WetSimMath.step(thirtieth, s, 1f / 30f)
+
+        // Diffusion must converge to the same water field regardless of how the
+        // wall-clock time is sliced into frames.
+        for (i in 0 until 64) {
+            assertEquals(sixtieth.water[i], thirtieth.water[i], 0.02f)
+        }
+    }
 }

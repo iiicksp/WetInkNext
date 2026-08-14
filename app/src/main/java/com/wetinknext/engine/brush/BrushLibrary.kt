@@ -41,7 +41,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.0f,
             rotationJitter = 1.0f,
             sizeJitter = 0.0f,
@@ -80,7 +80,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.0f,
             rotationJitter = 0.05f,
             sizeJitter = 0.0f,
@@ -119,7 +119,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.0f,
             rotationJitter = 1.0f,
             sizeJitter = 0.0f,
@@ -158,7 +158,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NON_BUILDUP,
-            useTempStrokeBuffer = false,
+            
             scatter = 0.0f,
             rotationJitter = 0.0f,
             sizeJitter = 0.0f,
@@ -197,7 +197,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NON_BUILDUP,
-            useTempStrokeBuffer = false,
+            
             scatter = 0.0f,
             rotationJitter = 0.0f,
             sizeJitter = 0.0f,
@@ -236,7 +236,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.0f,
             rotationJitter = 1.0f,
             sizeJitter = 0.1f,
@@ -275,7 +275,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.0f,
             rotationJitter = 0.02f,
             sizeJitter = 0.0f,
@@ -314,7 +314,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.0f,
             rotationJitter = 0.05f,
             sizeJitter = 0.0f,
@@ -353,7 +353,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.0f,
             rotationJitter = 1.0f,
             sizeJitter = 0.0f,
@@ -392,7 +392,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.0f,
             rotationJitter = 1.0f,
             sizeJitter = 0.0f,
@@ -440,7 +440,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.0f,
             rotationJitter = 1.0f,
             sizeJitter = 0.0f,
@@ -479,7 +479,7 @@ object BrushLibrary {
             emissionUsesTime = true,
             emissionRateHz = 60f,
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.0f,
             rotationJitter = 1.0f,
             sizeJitter = 0.0f,
@@ -518,7 +518,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.0f,
             rotationJitter = 1.0f,
             sizeJitter = 0.0f,
@@ -557,7 +557,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.MULTIPLY,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.0f,
             rotationJitter = 0.0f,
             sizeJitter = 0.0f,
@@ -596,7 +596,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NON_BUILDUP,
-            useTempStrokeBuffer = false,
+            
             scatter = 0.0f,
             rotationJitter = 0.0f,
             sizeJitter = 0.0f,
@@ -635,7 +635,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.2f,
             rotationJitter = 1.0f,
             sizeJitter = 0.2f,
@@ -674,7 +674,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.5f,
             rotationJitter = 1.0f,
             sizeJitter = 0.5f,
@@ -713,7 +713,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.1f,
             rotationJitter = 1.0f,
             sizeJitter = 0.3f,
@@ -752,7 +752,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 1.0f,
             rotationJitter = 1.0f,
             sizeJitter = 0.4f,
@@ -791,7 +791,7 @@ object BrushLibrary {
             emissionUsesTime = false,
             
             blendPolicy = BlendPolicy.NORMAL_BUILDUP,
-            useTempStrokeBuffer = true,
+            
             scatter = 0.15f,
             rotationJitter = 1.0f,
             sizeJitter = 0.1f,
