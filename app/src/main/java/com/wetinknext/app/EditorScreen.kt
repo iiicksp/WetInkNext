@@ -206,6 +206,12 @@ fun EditorScreen(
         openPanel = EditorPanel.BRUSH_STUDIO
     }
 
+    fun uiShapeToEngine(shape: SelectionShapeUi): com.wetinknext.engine.selection.SelectionShape = when (shape) {
+        SelectionShapeUi.FREEHAND -> com.wetinknext.engine.selection.SelectionShape.FREEHAND
+        SelectionShapeUi.RECTANGLE -> com.wetinknext.engine.selection.SelectionShape.RECTANGLE
+        SelectionShapeUi.ELLIPSE -> com.wetinknext.engine.selection.SelectionShape.ELLIPSE
+    }
+
     val transformActions = object : TransformActions {
         override fun reset() { surface.transformResetTransforms() }
         override fun cancel() {
@@ -277,7 +283,9 @@ fun EditorScreen(
                     onUndoClick = { surface.undo() },
                     onRedoClick = { surface.redo() },
                     onSelectionClick = {
-                        openPanel = if (openPanel == EditorPanel.SELECTION) EditorPanel.NONE else EditorPanel.SELECTION
+                        val opening = openPanel != EditorPanel.SELECTION
+                        if (opening) surface.beginSelection(uiShapeToEngine(selectionShapeUi))
+                        openPanel = if (opening) EditorPanel.SELECTION else EditorPanel.NONE
                     },
                     onTransformClick = {
                         openPanel = if (openPanel == EditorPanel.TRANSFORM) EditorPanel.NONE else EditorPanel.TRANSFORM
