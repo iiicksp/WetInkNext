@@ -90,6 +90,15 @@ class BrushPreviewRenderer(
         return pixels?.let { PreviewResult(it, previewWidth, previewHeight) }
     }
 
+    /** For a dead EGL context: drop cached names without glDelete*. */
+    fun resetHandles() {
+        target.resetHandles()
+        wetTargetA.resetHandles()
+        wetTargetB.resetHandles()
+        wetComposite.resetHandles()
+        created = false
+    }
+
     fun release() {
         GlCheck.checkOnGlThread()
         if (created) {

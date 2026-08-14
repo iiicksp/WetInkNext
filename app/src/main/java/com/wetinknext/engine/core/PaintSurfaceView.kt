@@ -485,12 +485,21 @@ class PaintSurfaceView @JvmOverloads constructor(
         engineRenderer.onInputRenderRequested = null
         engineRenderer.setOnSecondaryPointerDown { }
 
-        // Пытаемся освободить GL-объекты, но не рассчитываем на 100% успех здесь
-        queueEvent { 
-            // Отменяем активный штрих перед освобождением
-            engineRenderer.cancelActiveStroke()
-            engineRenderer.releaseGlObjects() 
+        // GL objects can only be deleted while the EGL context is still current,
+        // and super.onDetachedFromWindow() destroys it. Block briefly until the
+        // GL thread confirms the release actually happened.
+        engineRenderer.shutdownWorkers()
+        val released = java.util.concurrent.CountDownLatch(1)
+        queueEvent {
+            try {
+                engineRenderer.cancelActiveStroke()
+                engineRenderer.releaseGlObjects()
+            } finally {
+                released.countDown()
+            }
         }
+        requestRender()
+        released.await(500, java.util.concurrent.TimeUnit.MILLISECONDS)
         super.onDetachedFromWindow()
     }
 }

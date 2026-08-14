@@ -23,5 +23,7 @@ class ThumbnailCapture {
         )
     }
 
+    fun resetHandles() = renderer.resetHandles()
+
     fun release() = renderer.release()
 }

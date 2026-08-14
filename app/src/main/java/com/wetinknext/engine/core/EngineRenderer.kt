@@ -813,7 +813,7 @@ class EngineRenderer(
         val currentThread = Thread.currentThread()
         glThread = currentThread
         GlCheck.setGlThread(currentThread)
-        releaseGlObjects()
+        invalidateAllGlHandles()
         undoPipeline.ensureRunning()
         ensureTilePayloadExecutor()
         thumbnailScheduler?.ensureRunning()
@@ -1908,6 +1908,41 @@ class EngineRenderer(
 
     private fun canTickAnimation(): Boolean = animationActive && animationPlaying
 
+    /** All offscreen targets owned directly by the renderer (non-budgeted ones released here). */
+    private val allTargets: List<RenderTarget> = listOf(
+        strokeTarget, smudgeTarget, strokePreviewTarget, strokeCoveragePreviewTarget,
+        strokeCoverageTarget, compositeTarget, lowerCompositeTarget, upperCompositeTarget,
+        wetTargetA, wetTargetB, wetCompositeTarget,
+        transformTarget, cutTarget, mergedTarget, onionTarget,
+    )
+
+    /**
+     * Called from PaintSurfaceView.onDetachedFromWindow before the GL thread
+     * dies. Graceful (shutdown, not shutdownNow): tiles still being written
+     * must reach disk.
+     */
+    fun shutdownWorkers() {
+        thumbnailScheduler?.shutdown()
+        tilePayloadExecutor.shutdown()
+    }
+
+    /**
+     * A fresh EGL context invalidates every previously allocated GL name.
+     * Drop the stale handles without glDelete* (the old context is dead, the
+     * driver already freed the memory; deleting stale names is at best a
+     * no-op and at worst frees a reused name).
+     */
+    private fun invalidateAllGlHandles() {
+        allTargets.forEach { it.resetHandles() }
+        layerStack.resetGlHandles()
+        grainTexture?.resetHandles()
+        shapeTexture?.resetHandles()
+        secondaryShapeTexture?.resetHandles()
+        exportRenderer.resetHandles()
+        thumbnailCapture.resetHandles()
+        brushPreviewRenderer.resetHandles()
+    }
+
     fun releaseGlObjects() {
         checkOnGlThread()
         invalidatePendingUndoHistory()
@@ -1967,6 +2002,7 @@ class EngineRenderer(
         documentSession = null
         geometry?.release()
         geometry = null
+        allTargets.forEach { it.release() }
         targets.releaseAll()
         gpuBudget.reset()
         layerStack.release()

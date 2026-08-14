@@ -60,6 +60,15 @@ class RenderTarget {
         framebufferId = 0; textureId = 0; width = 0; height = 0; usesHalfFloat = false
     }
 
+    /**
+     * Clears GL names without calling glDelete* — for a replaced/dead EGL
+     * context where the old names are no longer valid objects. The driver has
+     * already released the memory; drawing with the stale ids is what leaks.
+     */
+    fun resetHandles() {
+        framebufferId = 0; textureId = 0; width = 0; height = 0; usesHalfFloat = false
+    }
+
     private fun createInternal(targetWidth: Int, targetHeight: Int, halfFloat: Boolean): Boolean {
         val textures = IntArray(1)
         val framebuffers = IntArray(1)

@@ -82,6 +82,11 @@ class BrushTexture {
         )
     }
 
+    /** Drops the cached GL name for a dead context without glDelete*. */
+    fun resetHandles() {
+        textureId = 0
+    }
+
     fun release() {
         GlCheck.checkOnGlThread()
         if (textureId != 0) {

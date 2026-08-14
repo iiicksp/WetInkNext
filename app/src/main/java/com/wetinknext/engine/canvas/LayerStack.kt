@@ -156,6 +156,11 @@ class LayerStack {
         return true
     }
 
+    /** Resets every layer target's GL names for a dead context. */
+    fun resetGlHandles() {
+        allLayers().forEach { it.target.resetHandles() }
+    }
+
     fun release() {
         targetOwner?.let { targets -> layers.forEach { it.release(targets) } }
         layers.clear()

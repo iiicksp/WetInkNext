@@ -110,6 +110,16 @@ class ThumbnailRenderer {
     }
 
     /** Releases GL objects. Call while the context is current. */
+    /** For a dead EGL context: drop names without glDelete*. */
+    fun resetHandles() {
+        readBuffer = null
+        target.resetHandles()
+        geometry = null
+        geometryWidth = 0
+        geometryHeight = 0
+        created = false
+    }
+
     fun release() {
         GlCheck.checkOnGlThread()
         readBuffer = null
