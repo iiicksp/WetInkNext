@@ -9,10 +9,7 @@ import com.wetinknext.BuildConfig
 import com.wetinknext.domain.document.LayerDocument
 import com.wetinknext.domain.document.ProjectDocument
 import com.wetinknext.domain.animation.AnimationDocument
-import com.wetinknext.domain.animation.createFramesFromLayers
-import com.wetinknext.domain.animation.normalizedAnimationDocument
-import com.wetinknext.domain.animation.groupLayersIntoFrame
-import com.wetinknext.domain.animation.nextPlaybackIndex
+import com.wetinknext.engine.animation.AnimationController
 import com.wetinknext.engine.brush.BrushSettings
 import com.wetinknext.engine.brush.BrushTexture
 import com.wetinknext.engine.brush.LoadedBrushTexture
@@ -123,14 +120,14 @@ class EngineRenderer(
     private var selectionRendererCreated = false
 
     // ---- Animation ----
-    private var animationDocument: AnimationDocument? = null
-    private var animationActive = false
-    private var animationFrameId = 0L
-    private var animationPlaying = false
-    private var animationLastTickNanos = 0L
-    private val savedLayerVisibility = mutableMapOf<Long, Boolean>()
-    private val onionTarget = RenderTarget()
-    private val onionOpacity: Float get() = animationDocument?.onionSkin?.opacity ?: 0.35f
+    private val animationController = AnimationController(
+        layerStack = layerStack,
+        requestRender = { onInputRenderRequested?.invoke() },
+        publishUiState = { publishState() },
+        compositorProvider = { compositor },
+        geometryProvider = { geometry },
+        canvasToFboProvider = { canvasToFboMatrix },
+    )
     private var selectionMode = SelectionShape.FREEHAND
     private var selectionActive = false
     private var selectionTouchActive = false
@@ -911,8 +908,8 @@ class EngineRenderer(
         if (redoGestureRequested.compareAndSet(true, false)) redo()
         if (resetCameraGestureRequested.compareAndSet(true, false)) resetCamera()
         inputBatchesSinceLastFrameLog += drainInput()
-        trackAnimationPlayback()
-        if (animationPlaying) onInputRenderRequested?.invoke()
+        animationController.trackPlayback()
+        if (animationController.isPlaying) onInputRenderRequested?.invoke()
         if (strokeCommitter.processPendingReadbacks()) publishState()
         if (undoPipeline.process(undoManager)) publishState()
         thumbnailScheduler?.processCompleted()
@@ -1085,7 +1082,7 @@ class EngineRenderer(
                 strokeOpacity = strokeOpacity,
                 canvasToClip = canvasToClipMatrix,
                 activeLayerTextureId = activeLayerTextureId,
-                onionTextureId = onionTarget.textureId,
+                onionTextureId = animationController.onionTextureId(),
             )
             return
         }
@@ -1120,7 +1117,7 @@ class EngineRenderer(
             firstLayerIndex = activeLayerIndex,
             lastLayerExclusive = activeLayerIndex + 1,
             activeLayerTextureId = activeLayerTextureId,
-            onionTextureId = onionTarget.textureId,
+            onionTextureId = animationController.onionTextureId(),
         )
         if (activeLayerIndex < layerStack.count - 1) {
             textureBlitter.blit(upperCompositeTarget.textureId)
@@ -1346,13 +1343,6 @@ class EngineRenderer(
 
     private fun requestRender() {
         onInputRenderRequested?.invoke()
-    }
-
-    private fun restoreLayerVisibility() {
-        for (layer in layerStack.allLayers()) {
-            savedLayerVisibility[layer.id]?.let { layer.isVisible = it }
-        }
-        savedLayerVisibility.clear()
     }
 
     /** Must run on the GL thread while the context is still current. */
@@ -1699,221 +1689,12 @@ class EngineRenderer(
         )
     }
 
-// ---------------------------------------------------------------- animation
-
-    private fun ensureAnimationDocument(): AnimationDocument {
-        val existing = animationDocument
-        if (existing != null && existing.frames.isNotEmpty()) return existing
-        val doc = AnimationDocument(
-            enabled = true,
-            framesPerSecond = 12,
-            frames = createFramesFromLayers(layerStack.allLayers().map { it.id }),
-        )
-        animationDocument = normalizedAnimationDocument(doc, layerStack.allLayers().map { it.id }.toSet())
-        return animationDocument!!
-    }
-
-    /** Advances playback by one frame when the current hold period elapsed. */
-    private fun trackAnimationPlayback() {
-        if (!animationActive || !animationPlaying) return
-        val doc = animationDocument ?: return
-        if (doc.frames.size <= 1) return
-        val now = System.nanoTime()
-        val hold = doc.frames.firstOrNull { it.id == animationFrameId }?.holdFrames ?: 1
-        val periodNanos = (1_000_000_000L / doc.framesPerSecond.coerceIn(1, 60)) * hold
-        if (now - animationLastTickNanos < periodNanos) return
-        val index = doc.frames.indexOfFirst { it.id == animationFrameId }.coerceAtLeast(0)
-        val step = nextPlaybackIndex(index, 1, doc.frames.size, doc.playbackMode)
-        animationLastTickNanos = now
-        if (step.shouldStop) {
-            setAnimationPlaying(false)
-            return
-        }
-        val next = doc.frames.getOrNull(step.nextIndex) ?: return
-        animationFrameId = next.id
-        applyFrameToVisibility(animationFrameId)
-        rebuildOnion()
-        publishState()
-        requestRender()
-    }
-
-    /** Enters/exits animation mode; restores layer visibility on exit. */
-    fun toggleAnimationActive() {
-        GlCheck.checkOnGlThread()
-        if (!animationActive) {
-            savedLayerVisibility.clear()
-            layerStack.allLayers().forEach { savedLayerVisibility[it.id] = it.isVisible }
-            val doc = ensureAnimationDocument()
-            animationActive = true
-            animationFrameId = doc.frames.firstOrNull()?.id ?: 0L
-            applyFrameToVisibility(animationFrameId)
-            rebuildOnion()
-        } else {
-            animationActive = false
-            animationPlaying = false
-            restoreLayerVisibility()
-            onionTarget.release()
-        }
-        publishState()
-        requestRender()
-    }
-
-    fun setAnimationDocument(document: AnimationDocument) {
-        GlCheck.checkOnGlThread()
-        val normalized = normalizedAnimationDocument(
-            document.copy(enabled = true),
-            layerStack.allLayers().map { it.id }.toSet(),
-        )
-        animationDocument = normalized
-        val stillValid = normalized.frames.any { it.id == animationFrameId }
-        if (!stillValid) {
-            animationFrameId = normalized.frames.firstOrNull()?.id ?: 0L
-        }
-        if (animationActive) applyFrameToVisibility(animationFrameId)
-        rebuildOnion()
-        publishState()
-        requestRender()
-    }
-
-    fun setAnimationFrame(frameId: Long) {
-        val doc = animationDocument ?: return
-        if (doc.frames.none { it.id == frameId }) return
-        animationFrameId = frameId
-        if (animationActive) applyFrameToVisibility(frameId)
-        rebuildOnion()
-        publishState()
-        requestRender()
-    }
-
-    fun animationAddFrame() {
-        val doc = ensureAnimationDocument()
-        val activeIds = doc.frames.firstOrNull { it.id == animationFrameId }?.layerIds.orEmpty()
-        val updated = groupLayersIntoFrame(doc, activeIds)
-        animationDocument = normalizedAnimationDocument(updated, layerStack.allLayers().map { it.id }.toSet())
-        val newDoc = animationDocument!
-        animationFrameId = newDoc.frames.firstOrNull()?.id ?: 0L
-        applyFrameToVisibility(animationFrameId)
-        rebuildOnion()
-        publishState()
-        requestRender()
-    }
-
-    fun animationDuplicateFrame(frameId: Long) {
-        val doc = animationDocument ?: return
-        val ids = doc.frames.firstOrNull { it.id == frameId }?.layerIds.orEmpty()
-        animationDocument = normalizedAnimationDocument(
-            groupLayersIntoFrame(doc, ids),
-            layerStack.allLayers().map { it.id }.toSet(),
-        )
-        publishState()
-        requestRender()
-    }
-
-    fun animationDeleteFrame(frameId: Long) {
-        val doc = animationDocument ?: return
-        val remaining = doc.frames.filterNot { it.id == frameId }
-        val updated = if (remaining.isEmpty()) {
-            AnimationDocument(
-                enabled = true,
-                framesPerSecond = doc.framesPerSecond,
-                playbackMode = doc.playbackMode,
-                onionSkin = doc.onionSkin,
-                frames = createFramesFromLayers(layerStack.allLayers().map { it.id }),
-            )
-        } else doc.copy(frames = remaining)
-        animationDocument = normalizedAnimationDocument(updated, layerStack.allLayers().map { it.id }.toSet())
-        if (!animationDocument!!.frames.any { it.id == animationFrameId }) {
-            animationFrameId = animationDocument!!.frames.firstOrNull()?.id ?: 0L
-        }
-        if (animationActive) applyFrameToVisibility(animationFrameId)
-        rebuildOnion()
-        publishState()
-        requestRender()
-    }
-
-    fun animationMoveFrame(frameId: Long, direction: Int) {
-        val doc = animationDocument ?: return
-        val frames = doc.frames.toMutableList()
-        val index = frames.indexOfFirst { it.id == frameId }
-        val target = index + direction
-        if (index < 0 || target < 0 || target >= frames.size) return
-        val moved = frames.removeAt(index)
-        frames.add(target, moved)
-        animationDocument = normalizedAnimationDocument(doc.copy(frames = frames), layerStack.allLayers().map { it.id }.toSet())
-        publishState()
-        requestRender()
-    }
-
-    fun animationSetHold(frameId: Long, hold: Int) {
-        val doc = animationDocument ?: return
-        animationDocument = normalizedAnimationDocument(
-            doc.copy(frames = doc.frames.map { if (it.id == frameId) it.copy(holdFrames = hold.coerceIn(1, 120)) else it }),
-            layerStack.allLayers().map { it.id }.toSet(),
-        )
-        publishState()
-        requestRender()
-    }
-
-    fun animationTogglePlay() {
-        setAnimationPlaying(!animationPlaying)
-    }
-
-    fun setAnimationPlaying(playing: Boolean) {
-        if (animationPlaying == playing) return
-        animationPlaying = playing && animationActive
-        if (animationPlaying) animationLastTickNanos = System.nanoTime()
-        publishState()
-        requestRender()
-    }
-
-    /** Applies the frame's layer membership to visibility; onion rebuild on demand. */
-    private fun applyFrameToVisibility(frameId: Long) {
-        val doc = animationDocument ?: return
-        val frame = doc.frames.firstOrNull { it.id == frameId } ?: return
-        val visibleIds = frame.layerIds.toSet()
-        for (layer in layerStack.allLayers()) {
-            val saved = savedLayerVisibility[layer.id] ?: true
-            layer.isVisible = saved && (layer.id in visibleIds)
-        }
-    }
-
-    private fun rebuildOnion() {
-        val doc = animationDocument ?: return
-        if (!doc.onionSkin.enabled || doc.frames.size < 2) {
-            onionTarget.release()
-            return
-        }
-        val index = doc.frames.indexOfFirst { it.id == animationFrameId }
-        if (index <= 0) {
-            onionTarget.release()
-            return
-        }
-        val prevFrame = doc.frames[index - 1]
-        val activeIds = doc.frames[index].layerIds.toSet()
-        val context = compositor ?: return
-        val geom = geometry ?: return
-        onionTarget.create(layerStack.canvasWidth, layerStack.canvasHeight, preferHalfFloat = false)
-        onionTarget.clear(0f, 0f, 0f, 0f)
-        onionTarget.bind()
-        GLES30.glViewport(0, 0, layerStack.canvasWidth, layerStack.canvasHeight)
-        for (layer in layerStack.allLayers()) {
-            if (layer.id !in prevFrame.layerIds || layer.id in activeIds) continue
-            val saved = layer.opacity
-            layer.opacity = (saved * onionOpacity).coerceIn(0f, 1f)
-            context.renderLayer(geom, layer, canvasToClip = canvasToFboMatrix)
-            layer.opacity = saved
-        }
-        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
-    }
-
-    private fun canTickAnimation(): Boolean = animationActive && animationPlaying
-
     /** All offscreen targets owned directly by the renderer (non-budgeted ones released here). */
     private val allTargets: List<RenderTarget> = listOf(
         strokeTarget, smudgeTarget, strokePreviewTarget, strokeCoveragePreviewTarget,
         strokeCoverageTarget, compositeTarget, lowerCompositeTarget, upperCompositeTarget,
         wetTargetA, wetTargetB, wetCompositeTarget,
-        transformTarget, cutTarget, mergedTarget, onionTarget,
+        transformTarget, cutTarget, mergedTarget,
     )
 
     /**
@@ -1941,7 +1722,29 @@ class EngineRenderer(
         exportRenderer.resetHandles()
         thumbnailCapture.resetHandles()
         brushPreviewRenderer.resetHandles()
+        animationController.resetGlHandles()
     }
+
+    // ---- Animation delegation (state lives in AnimationController) ----
+
+    fun toggleAnimationActive() = animationController.toggleAnimationActive()
+
+    fun animationTogglePlay() = animationController.animationTogglePlay()
+
+    fun setAnimationDocument(document: com.wetinknext.domain.animation.AnimationDocument) =
+        animationController.setAnimationDocument(document)
+
+    fun setAnimationFrame(frameId: Long) = animationController.setAnimationFrame(frameId)
+
+    fun animationAddFrame() = animationController.animationAddFrame()
+
+    fun animationDuplicateFrame(frameId: Long) = animationController.animationDuplicateFrame(frameId)
+
+    fun animationDeleteFrame(frameId: Long) = animationController.animationDeleteFrame(frameId)
+
+    fun animationMoveFrame(frameId: Long, direction: Int) = animationController.animationMoveFrame(frameId, direction)
+
+    fun animationSetHold(frameId: Long, hold: Int) = animationController.animationSetHold(frameId, hold)
 
     fun releaseGlObjects() {
         checkOnGlThread()
@@ -1994,11 +1797,7 @@ class EngineRenderer(
         selectionMask?.release()
         selectionMask = null
         selectionRendererCreated = false
-        onionTarget.release()
-        animationActive = false
-        animationPlaying = false
-        animationDocument = null
-        savedLayerVisibility.clear()
+        animationController.release()
         documentSession = null
         geometry?.release()
         geometry = null
@@ -2709,9 +2508,9 @@ class EngineRenderer(
                     restoreFailures = undoRestoreFailures,
                     memoryBytes = undoManager.memoryBytes,
                 ),
-                animationDocument = animationDocument,
-                animationFrameId = animationFrameId,
-                animationPlaying = animationPlaying,
+                animationDocument = animationController.document,
+                animationFrameId = animationController.frameId,
+                animationPlaying = animationController.isPlaying,
             ),
         )
     }
