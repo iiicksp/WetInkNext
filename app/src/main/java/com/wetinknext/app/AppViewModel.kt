@@ -227,8 +227,8 @@ class AppViewModel(
                 // current metadata first: the captured callback must not
                 // overwrite a later layer/property save with stale metadata.
                 runCatching {
-                    val currentDocument = repository.open(projectId)
-                    repository.save(currentDocument, emptyMap(), encoded)
+                    val currentDocument = withContext(Dispatchers.IO) { repository.open(projectId) }
+                    withContext(Dispatchers.IO) { repository.save(currentDocument, emptyMap(), encoded) }
                 }
                     .onSuccess { refreshProjects() }
                     .onFailure { error -> uiState = uiState.copy(errorMessage = error.message) }
@@ -367,36 +367,55 @@ class AppViewModel(
     }
 
     fun closeEditor() {
-        autosaveCoordinator.cancel()
         val document = openedDocument
+        if (document == null) {
+            route = AppRoute.Home
+            return
+        }
+
         val payloads = pendingLayerPayloads
         val thumbnail = pendingThumbnailWebp
         val layerPreviews = pendingLayerPreviewsWebp
         val acknowledge = pendingTilesAcknowledgement
-        document?.let { openDocument ->
-            viewModelScope.launch {
-                uiState = uiState.copy(isSaving = true)
-                runCatching { repository.save(openDocument, payloads, thumbnail, layerPreviews) }
-                    .onSuccess {
-                        repository.clearRecovery(openDocument.id)
-                        acknowledge?.invoke()
-                        uiState = uiState.copy(isDirty = false, isSaving = false)
-                        refreshProjects()
-                    }
-                    .onFailure { error -> uiState = uiState.copy(isSaving = false, errorMessage = error.message) }
-            }
-        }
+
+        // Leave the editor immediately so the UI never blocks on disk I/O, but
+        // keep the recovery flag until the final write has actually landed.
+        openedDocument = null
+        openedProject = null
+        route = AppRoute.Home
         pendingSaveDocument = null
         pendingLayerPayloads = emptyMap()
         pendingTilesAcknowledgement = null
         pendingThumbnailWebp = null
         pendingLayerPreviewsWebp = emptyMap()
-        openedDocument = null
-        openedProject = null
-        route = AppRoute.Home
-        dismissRecovery()
-        refreshProjects()
+
+        viewModelScope.launch {
+            uiState = uiState.copy(isSaving = true)
+            // flushNow replaces the debounce: it runs the write under the same
+            // mutex as autosave, so the two can never interleave.
+            val result = runCatching {
+                autosaveCoordinator.flushNow {
+                    withContext(Dispatchers.IO) {
+                        repository.save(document, payloads, thumbnail, layerPreviews)
+                    }
+                }
+            }
+            result
+                .onSuccess {
+                    repository.clearRecovery(document.id)
+                    // Only now is it safe to forget the interrupted session.
+                    dismissRecovery()
+                    acknowledge?.invoke()
+                    uiState = uiState.copy(isDirty = false, isSaving = false)
+                }
+                .onFailure { error ->
+                    // Keep the recovery flag set so the next launch offers restore.
+                    uiState = uiState.copy(isSaving = false, errorMessage = error.message)
+                }
+            refreshProjects()
+        }
     }
+
 
     private fun markEditorSession(projectId: String) {
         session.edit()
