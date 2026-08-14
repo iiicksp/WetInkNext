@@ -15,6 +15,8 @@ class RenderTarget {
     var usesHalfFloat: Boolean = false
         private set
 
+    private var trackedBytes = 0L
+
     /** Byte size of one RGBA pixel in the backing texture's actual format. */
     val bytesPerPixel: Int
         get() = if (usesHalfFloat) 8 else 4
@@ -55,6 +57,10 @@ class RenderTarget {
 
     fun release() {
         GlCheck.checkOnGlThread()
+        if (trackedBytes != 0L) {
+            trackRelease(trackedBytes)
+            trackedBytes = 0L
+        }
         if (framebufferId != 0) GLES30.glDeleteFramebuffers(1, intArrayOf(framebufferId), 0)
         if (textureId != 0) GLES30.glDeleteTextures(1, intArrayOf(textureId), 0)
         framebufferId = 0; textureId = 0; width = 0; height = 0; usesHalfFloat = false
@@ -66,6 +72,10 @@ class RenderTarget {
      * already released the memory; drawing with the stale ids is what leaks.
      */
     fun resetHandles() {
+        if (trackedBytes != 0L) {
+            trackRelease(trackedBytes)
+            trackedBytes = 0L
+        }
         framebufferId = 0; textureId = 0; width = 0; height = 0; usesHalfFloat = false
     }
 
@@ -94,6 +104,19 @@ class RenderTarget {
             return false
         }
         framebufferId = framebuffer; textureId = texture; width = targetWidth; height = targetHeight; usesHalfFloat = halfFloat
+        trackedBytes = targetWidth.toLong() * targetHeight * (if (halfFloat) 8L else 4L)
+        trackAllocation(trackedBytes)
         return true
+    }
+
+    companion object {
+        private val allocatedBytes = java.util.concurrent.atomic.AtomicLong(0)
+
+        /** Live VRAM footprint of all live [RenderTarget] textures. */
+        val totalAllocatedMb: Float
+            get() = allocatedBytes.get() / (1024f * 1024f)
+
+        internal fun trackAllocation(bytes: Long) = allocatedBytes.addAndGet(bytes)
+        internal fun trackRelease(bytes: Long) = allocatedBytes.addAndGet(-bytes)
     }
 }

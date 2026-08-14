@@ -1971,7 +1971,7 @@ class EngineRenderer(
             FRAME_DIAG_TAG,
             "frameMs=$frameMs queue=${inputQueue.size} frames=$frameCounter " +
                 "inputBatches=$inputBatchesSinceLastFrameLog dabs=${dabBuffer.count} " +
-                "undoPending=${undoPipeline.pendingCount}",
+                "undoPending=${undoPipeline.pendingCount} vramMb=${RenderTarget.totalAllocatedMb}",
         )
         lastFrameLogNanos = frameStartNanos
         frameCounter = 0
