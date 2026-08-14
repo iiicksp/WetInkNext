@@ -30,6 +30,7 @@ import com.wetinknext.engine.core.EditorUiState
 import com.wetinknext.engine.core.CanvasBackdropMode
 import com.wetinknext.engine.core.PaintSurfaceView
 import com.wetinknext.data.export.ProjectExporter
+import com.wetinknext.ui.animation.AnimationSettingsMenu
 import com.wetinknext.ui.animation.AnimationTimelineToolbar
 import com.wetinknext.ui.color.ColorPanel
 import com.wetinknext.ui.color.GlesColorState
@@ -383,7 +384,9 @@ fun EditorScreen(
                 onDeleteSelection = { surface.deleteSelection() },
                 onTransformActions = transformActions,
                 transformMode = transformMode,
-                uiState = uiState
+                uiState = uiState,
+                selectionShapeUi = selectionShapeUi,
+                onPanelChange = { openPanel = it }
             )
         }
     }
@@ -419,6 +422,8 @@ private fun EditorPanelHost(
     onTransformActions: TransformActions,
     transformMode: TransformModeUi,
     uiState: EditorUiState,
+    selectionShapeUi: SelectionShapeUi,
+    onPanelChange: (EditorPanel) -> Unit,
     onDismiss: () -> Unit
 ) {
     Box(modifier = Modifier.fillMaxSize()) {
@@ -528,7 +533,7 @@ private fun EditorPanelHost(
                         },
                         onDone = {
                             onTransformBegin()
-                            openPanel = EditorPanel.TRANSFORM
+                            onPanelChange(EditorPanel.TRANSFORM)
                         },
                         onResetSelection = onClearSelection,
                         onDeleteSelection = onDeleteSelection,
@@ -563,7 +568,7 @@ private fun EditorPanelHost(
                         document = uiState.animationDocument
                             ?: com.wetinknext.domain.animation.AnimationDocument(enabled = true),
                         onDocumentChange = { surface.animationSetDocument(it) },
-                        onDismiss = { openPanel = EditorPanel.ANIMATION },
+                        onDismiss = { onPanelChange(EditorPanel.ANIMATION) },
                     )
                 }
             }
@@ -584,12 +589,12 @@ private fun EditorPanelHost(
                         onHoldChange = { id, hold -> surface.animationSetHold(id, hold) },
                         onRoleToggle = { _, _ -> },
                         onAssembleLayers = {},
-                        onLayersClick = { openPanel = EditorPanel.LAYERS },
-                        onSettingsClick = { openPanel = EditorPanel.ANIMATION_SETTINGS },
+                        onLayersClick = { onPanelChange(EditorPanel.LAYERS) },
+                        onSettingsClick = { onPanelChange(EditorPanel.ANIMATION_SETTINGS) },
                         onPlayToggle = { surface.animationTogglePlay() },
                         onClose = {
                             surface.toggleAnimationActive()
-                            openPanel = EditorPanel.NONE
+                            onPanelChange(EditorPanel.NONE)
                         }
                     )
                 }

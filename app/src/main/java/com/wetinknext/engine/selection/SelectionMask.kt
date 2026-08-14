@@ -18,14 +18,13 @@ import kotlin.math.min
  *
  * All methods must run on the GL thread.
  */
-class SelectionMask(private val width: Int, private val height: Int) {
+class SelectionMask(val width: Int, val height: Int) {
 
     private val pixels = ByteArray(width * height)
     private var textureId = 0
     private var textureDirty = false
 
     val selectionBounds = IntArray(4) // left, top, right, bottom
-        private set
     var isEmpty: Boolean = true
         private set
 

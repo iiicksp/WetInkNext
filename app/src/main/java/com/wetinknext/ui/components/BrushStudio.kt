@@ -242,7 +242,7 @@ private fun StudioSlider(
     theme: AppTheme,
     title: String,
     value: Float,
-    range: ClosedFloatingPointRange<Float>,
+    valueRange: ClosedFloatingPointRange<Float>,
     display: (Float) -> String,
     onChange: (Float) -> Unit,
 ) {
@@ -254,7 +254,7 @@ private fun StudioSlider(
         Slider(
             value = value,
             onValueChange = onChange,
-            valueRange = range,
+            valueRange = valueRange,
             modifier = Modifier.weight(1f),
         )
         Text(

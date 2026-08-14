@@ -1344,6 +1344,17 @@ class EngineRenderer(
         )
     }
 
+    private fun requestRender() {
+        onInputRenderRequested?.invoke()
+    }
+
+    private fun restoreLayerVisibility() {
+        for (layer in layerStack.allLayers()) {
+            savedLayerVisibility[layer.id]?.let { layer.isVisible = it }
+        }
+        savedLayerVisibility.clear()
+    }
+
     /** Must run on the GL thread while the context is still current. */
     /**
      * Renders a real brush sample for the library panel / brush studio.

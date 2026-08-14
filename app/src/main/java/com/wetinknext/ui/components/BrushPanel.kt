@@ -367,7 +367,7 @@ private fun BrushPreviewStrip(
 }
 
 @Composable
-private fun PreviewCheckerboard(
+fun PreviewCheckerboard(
     modifier: Modifier = Modifier,
     cellSize: Float,
 ) {

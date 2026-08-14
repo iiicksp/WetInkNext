@@ -275,7 +275,7 @@ class BrushPreviewRenderer(
             finalize = true,
             coverageColor = strokeColorLinear,
         )
-        return readPixels(target = wetComposite)
+        return readPixels(wetComposite)
     }
 
     private fun depositPending(settings: BrushSettings) {
