@@ -26,6 +26,8 @@ class StampEmitter(initialSettings: BrushSettings) {
     private var lastTiltY = 0f
     private var lastOrientationRad = 0f
     private var lastVelocity = 0f
+    /** Latest low-passed tip velocity in document px/s; drives wet advection. */
+    val lastVelocityPxPerSecond: Float get() = lastVelocity
     private var lastEmitTimeNanos = 0L
 
     private var lastDabX = 0f

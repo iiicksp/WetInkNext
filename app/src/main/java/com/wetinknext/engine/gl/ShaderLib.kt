@@ -157,6 +157,7 @@ object ShaderLib {
         uniform vec2 uCanvasSize;
         uniform float uEdgeDarkening;
         uniform int uIsWetMode;
+        uniform float uWetness;
         in vec2 vVelocity;
         out vec4 fragColor;
         float luminance(vec3 color) {
@@ -254,10 +255,12 @@ object ShaderLib {
                 edge = smoothstep(0.0, 1.0, edge);
                 color = mix(color, color * 0.2, edge * uEdgeDarkening);
             }
-            // Additive mode for wet brush fluid buffer (RGB is pigment, A is water)
+            // Additive fluid-buffer deposit for a WET brush.
+            // RGB = premultiplied pigment, A = WATER (drives diffusion / carry).
+            // Water is weighed by the brush wetness so the wash spreads and
+            // dries the way the brush is set, not by pigment coverage.
             if (uIsWetMode == 1) {
-                // In wet mode, we just add the pigment and water to the simulation buffer
-                fragColor = vec4(color * coverage, coverage);
+                fragColor = vec4(color * coverage, coverage * clamp(uWetness, 0.0, 1.0));
             } else {
                 fragColor = vec4(color * a, a);
             }
@@ -552,26 +555,73 @@ object ShaderLib {
         precision highp float;
         in vec2 vUv;
         out vec4 fragColor;
-        
+
         uniform sampler2D uPigmentTex;
         uniform vec2 uPixelSize;
-        uniform vec2 uMotion;
-        uniform float uSpread;
-        uniform float uWetness;
-        uniform float uDeltaTime;
-        
-        void main() {
-            vec4 pigment = texture(uPigmentTex, vUv - uMotion * uDeltaTime);
-            
-            vec4 n = texture(uPigmentTex, vUv + vec2(0.0, uPixelSize.y));
-            vec4 s = texture(uPigmentTex, vUv - vec2(0.0, uPixelSize.y));
-            vec4 e = texture(uPigmentTex, vUv + vec2(uPixelSize.x, 0.0));
-            vec4 w = texture(uPigmentTex, vUv - vec2(uPixelSize.x, 0.0));
-            
-            vec4 blurred = (pigment * 4.0 + n + s + e + w) / 8.0;
-            float diffusion = clamp(uSpread * uWetness * pigment.a, 0.0, 1.0);
-            
-            fragColor = mix(pigment, blurred, diffusion);
+        uniform vec2 uMotion;          // brush-tip velocity in document UV/sec
+        uniform float uDeltaTime;      // real seconds since the previous step
+        uniform float uSpread;         // how far a wash bleeds
+        uniform float uWetness;        // global water loading of the brush
+        uniform float uBleed;          // fraction of water movement carrying pigment
+        uniform float uAdvection;      // how strongly the live tip pushes wet paint
+        uniform float uCoagulation;    // pigment clumping at the wet boundary
+        uniform float uEvaporation;    // water lost per second
+        uniform float uEdgeDarkening;  // extra darkening at the wash edge (finalize)
+        uniform int uFinalize;         // 1 = output pigment coverage for the commit
+
+        void main(){
+            vec2 px = uPixelSize;
+
+            // ---- advect: the live brush tip pushes existing wet paint backwards ----
+            vec2 shift = clamp(uMotion, vec2(-8.0), vec2(8.0)) * uDeltaTime * clamp(uAdvection, 0.0, 1.0);
+            vec4 wet = texture(uPigmentTex, vUv - shift);
+
+            // ---- 8-neighbour gather for near-isotropic diffusion ----
+            vec4 e  = texture(uPigmentTex, vUv + vec2( px.x,  0.0));
+            vec4 w  = texture(uPigmentTex, vUv + vec2(-px.x,  0.0));
+            vec4 n  = texture(uPigmentTex, vUv + vec2( 0.0,  px.y));
+            vec4 s  = texture(uPigmentTex, vUv + vec2( 0.0, -px.y));
+            vec4 ne = texture(uPigmentTex, vUv + vec2( px.x,  px.y));
+            vec4 nw = texture(uPigmentTex, vUv + vec2(-px.x,  px.y));
+            vec4 se = texture(uPigmentTex, vUv + vec2( px.x, -px.y));
+            vec4 sw = texture(uPigmentTex, vUv + vec2(-px.x, -px.y));
+
+            float wMean = (w.a + e.a + n.a + s.a + 0.5 * (nw.a + ne.a + sw.a + se.a)) / 6.0;
+            vec3  pMean = (w.rgb + e.rgb + n.rgb + s.rgb + 0.5 * (nw.rgb + ne.rgb + sw.rgb + se.rgb)) / 6.0;
+
+            // Wetter regions bleed further; a wet brush loads the whole wash.
+            float waterRate = clamp(uSpread * (0.35 + 0.65 * wet.a) * (0.5 + 0.5 * clamp(uWetness, 0.0, 1.0)), 0.0, 1.0);
+
+            // Water spreads at waterRate; pigment is carried by a fraction of that
+            // movement (bleed), though it still diffuses a little on its own so
+            // the wash merges instead of merely sliding.
+            float water = mix(wet.a, wMean, waterRate);
+            vec3  pig   = mix(wet.rgb, pMean, waterRate * mix(0.25, 1.0, clamp(uBleed, 0.0, 1.0)));
+
+            // ---- coagulation: pigment piles up where water thins (dark wet rim) ----
+            float gx = e.a - w.a;
+            float gy = n.a - s.a;
+            float grad = clamp(length(vec2(gx, gy)), 0.0, 1.0);
+            float rim  = clamp(uCoagulation, 0.0, 1.0) * grad;
+            pig = mix(pig, pig * (1.0 + rim * 0.6), rim);
+
+            // ---- evaporation: water dries over real time; thin washes settle ----
+            water = max(water - clamp(uEvaporation, 0.0, 1.0) * uDeltaTime, 0.0);
+
+            float pigCoverage = clamp(max(max(pig.r, pig.g), pig.b), 0.0, 1.0);
+
+            if (uFinalize == 1) {
+                // Commit pass: alpha becomes pigment coverage so a drying wash is
+                // not faded by leftover water. rgb stays premultiplied pigment.
+                vec3 color = clamp(pig, 0.0, 1.0);
+                float dark = clamp(uEdgeDarkening, 0.0, 1.0);
+                float edge = 1.0 - abs((pigCoverage - 0.5) * 2.0);
+                edge = smoothstep(0.0, 1.0, edge) * dark;
+                color = mix(color, color * 0.22, edge);
+                fragColor = vec4(color, pigCoverage);
+            } else {
+                fragColor = vec4(clamp(pig, 0.0, 1.0), water);
+            }
         }
     """
 

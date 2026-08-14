@@ -21,6 +21,7 @@ import com.wetinknext.engine.brush.ColorSpaces
 import com.wetinknext.engine.brush.DabBuffer
 import com.wetinknext.engine.brush.DabRenderer
 import com.wetinknext.engine.brush.StampEmitter
+import com.wetinknext.engine.brush.WetSimulationRenderer
 import com.wetinknext.engine.canvas.CanvasBackdropRenderer
 import com.wetinknext.engine.canvas.Compositor
 import com.wetinknext.engine.canvas.LayerStack
@@ -135,6 +136,24 @@ class EngineRenderer(
     private val lowerCompositeTarget = RenderTarget()
     /** Confirmed layers above the active one, cached only for a live stroke preview. */
     private val upperCompositeTarget = RenderTarget()
+    /** Half-float document-sized fluid-dynamics renderer for WET brushes. */
+    private val wetSimulationRenderer = WetSimulationRenderer()
+    /** Ping-pong fluid targets. RGB = premultiplied pigment, A = water amount. */
+    private val wetTargetA = RenderTarget()
+    private val wetTargetB = RenderTarget()
+    /** Where the finalised pigment-coverage of a WET stroke is produced before merging. */
+    private val wetCompositeTarget = RenderTarget()
+    private var wetFrontIsA = true
+    /** Last fluid-step timestamp; real deltaSeconds keeps diffusion frame-rate independent. */
+    private var wetStepLastNanos = 0L
+    /** Reused brush-tip velocity in document UV/s (direction-aligned) for advection. */
+    private val wetMotionUv = FloatArray(2)
+    /** Current fluid source. The ping-pong `wetFrontIsA` flag flips each step. */
+    private val wetFront: RenderTarget
+        get() = if (wetFrontIsA) wetTargetA else wetTargetB
+    /** Current fluid destination (the other side of the ping-pong). */
+    private val wetBack: RenderTarget
+        get() = if (wetFrontIsA) wetTargetB else wetTargetA
     private var strokeCacheEnabled = false
     private var compositeCacheDirty = true
     private var cachedPreviewActiveLayerIndex = -1
@@ -797,6 +816,7 @@ class EngineRenderer(
             it.create()
         }
         ribbonMeshRenderer = RibbonMeshRenderer().also { it.create() }
+        wetSimulationRenderer.create()
         strokeBlitter = StrokeBlitter().also { it.create() }
         nonBuildupStrokeRenderer = NonBuildupStrokeRenderer().also { it.create() }
         // Build both the gallery preview and the individual layer previews
@@ -1220,6 +1240,7 @@ class EngineRenderer(
         capsuleRenderer = null
         ribbonMeshRenderer?.release()
         ribbonMeshRenderer = null
+        wetSimulationRenderer.release()
         strokeBlitter?.release()
         strokeBlitter = null
         nonBuildupStrokeRenderer?.release()
@@ -1421,8 +1442,23 @@ class EngineRenderer(
         val strokeGeometry = geometry ?: return
 
         if (strokeBrush.renderMode == BrushRenderMode.WET) {
+            // Finalise the fluid buffer into pigment coverage (alpha = max pigment),
+            // so a drying wash is not faded by leftover water.
+            updateWetMotion()
+            wetSimulationRenderer.step(
+                source = wetFront,
+                destination = wetCompositeTarget,
+                wet = strokeBrush.wet,
+                deltaSeconds = WetSimulationRenderer.DEFAULT_DELTA_SECONDS,
+                motionUvPerSecondX = wetMotionUv[0],
+                motionUvPerSecondY = wetMotionUv[1],
+                finalize = true,
+            )
+            // The wash spreads beyond the source dabs; commit a dilated region so
+            // the diffused edge is actually merged. Margin scales with spread.
+            expandWetDirtyBounds()
             val commitResult = strokeCommitter.commit(
-                sourceTarget = wetFront,
+                sourceTarget = wetCompositeTarget,
                 layer = layer,
                 geometry = strokeGeometry,
                 blitter = blitter,
@@ -1436,6 +1472,7 @@ class EngineRenderer(
             if (commitResult is com.wetinknext.engine.core.StrokeCommitter.CommitResult.Queued) {
                 publishState()
             }
+            wetStepLastNanos = 0L
             return
         }
 
@@ -1510,6 +1547,26 @@ class EngineRenderer(
         return out[2] > out[0] && out[3] > out[1]
     }
 
+    /**
+     * Dilates the committed dirty region for a WET stroke so the diffused wash
+     * edge (which spreads past the source dabs) is actually merged into the layer.
+     */
+    private fun expandWetDirtyBounds() {
+        val spread = activeStrokeBrush?.wet?.spread ?: 0f
+        val diag = kotlin.math.hypot(
+            layerStack.canvasWidth.toFloat(),
+            layerStack.canvasHeight.toFloat(),
+        )
+        val margin = (WET_WASH_MARGIN_PX + WET_WASH_MARGIN_SCALE * spread * diag)
+            .coerceAtMost(0.12f * diag)
+            .coerceAtLeast(WET_WASH_MARGIN_PX)
+        val m = margin.toInt()
+        dirtyBounds[0] = (dirtyBounds[0] - m).coerceAtLeast(0)
+        dirtyBounds[1] = (dirtyBounds[1] - m).coerceAtLeast(0)
+        dirtyBounds[2] = (dirtyBounds[2] + m).coerceAtMost(layerStack.canvasWidth)
+        dirtyBounds[3] = (dirtyBounds[3] + m).coerceAtMost(layerStack.canvasHeight)
+    }
+
     private fun ensureWetTargets(): Boolean {
         val halfFloat = caps?.supportsHalfFloatColorBuffer == true
         val a = targets.create(
@@ -1526,9 +1583,17 @@ class EngineRenderer(
             height = layerStack.canvasHeight,
             preferHalfFloat = halfFloat,
         )
-        if (!a || !b) {
+        val c = targets.create(
+            target = wetCompositeTarget,
+            label = "wetCompositeTarget",
+            width = layerStack.canvasWidth,
+            height = layerStack.canvasHeight,
+            preferHalfFloat = halfFloat,
+        )
+        if (!a || !b || !c) {
             targets.release(wetTargetA)
             targets.release(wetTargetB)
+            targets.release(wetCompositeTarget)
             return false
         }
         wetFrontIsA = true
@@ -1541,6 +1606,10 @@ class EngineRenderer(
         val brush = activeStrokeBrush ?: return
         val renderer = dabRenderer ?: return
 
+        // Route the dab renderer into the fluid buffer (RGB pigment, A = water).
+        renderer.setWetMode(true)
+        renderer.setWetness(brush.wet.wetness)
+
         renderer.drawPendingInto(
             target = wetFront,
             width = layerStack.canvasWidth,
@@ -1552,14 +1621,48 @@ class EngineRenderer(
             strokeOpacity = 1f,
         )
 
+        val now = System.nanoTime()
+        val dt = if (wetStepLastNanos == 0L) {
+            WetSimulationRenderer.DEFAULT_DELTA_SECONDS
+        } else {
+            (now - wetStepLastNanos) / 1_000_000_000f
+        }
+        wetStepLastNanos = now
+
+        updateWetMotion()
+
         wetSimulationRenderer.step(
             source = wetFront,
             destination = wetBack,
-            settings = brush.wet,
+            wet = brush.wet,
+            deltaSeconds = dt,
+            motionUvPerSecondX = wetMotionUv[0],
+            motionUvPerSecondY = wetMotionUv[1],
+            finalize = false,
         )
         wetFrontIsA = !wetFrontIsA
-        
+    }
 
+    /**
+     * Latest brush-tip velocity in document UV/s, aligned to the direction of
+     * travel (the last dab displacement). Magnitude uses the low-passed
+     * [StampEmitter] speed so fast strokes smear a drying wash the right way.
+     */
+    private fun updateWetMotion() {
+        wetMotionUv[0] = 0f
+        wetMotionUv[1] = 0f
+        if (dabBuffer.count <= 0) return
+        val speed = stampEmitter.lastVelocityPxPerSecond
+        if (speed <= 1f) return
+        val o = (dabBuffer.count - 1) * DabBuffer.FLOATS_PER_DAB
+        val dx = dabBuffer.floats.get(o + 7)
+        val dy = dabBuffer.floats.get(o + 8)
+        val len = kotlin.math.hypot(dx, dy)
+        if (len <= 1e-4f) return
+        val cw = layerStack.canvasWidth.toFloat().coerceAtLeast(1f)
+        val ch = layerStack.canvasHeight.toFloat().coerceAtLeast(1f)
+        wetMotionUv[0] = (dx / len) * speed / cw
+        wetMotionUv[1] = (dy / len) * speed / ch
     }
 
     private fun drawPendingStampPreview(phase: String) {
@@ -1629,6 +1732,10 @@ class EngineRenderer(
         renderedRibbonMeshVersion = -1L
         stampPreviewInitialized = false
         dabRenderer?.clearStrokeData()
+        // Always restore the dab renderer to the non-wet path after a stroke;
+        // WET deposits re-enable it inside drawPendingWet.
+        dabRenderer?.setWetMode(false)
+        wetStepLastNanos = 0L
         if (strokeTarget.framebufferId != 0) {
             strokeTarget.clear(0f, 0f, 0f, 0f)
         }
@@ -2190,5 +2297,9 @@ class EngineRenderer(
         private const val THUMBNAIL_TAG = "ThumbnailBuild"
         private const val AA_MARGIN_PX = 4f
         private const val STAMP_DIRTY_MARGIN_PX = 4f
+        /** Base extra region committed around a WET wash past its source dabs. */
+        private const val WET_WASH_MARGIN_PX = 48
+        /** Per-unit-of-spread extra diagonal margin for wet diffusion. */
+        private const val WET_WASH_MARGIN_SCALE = 0.04f
     }
 }

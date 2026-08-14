@@ -43,6 +43,8 @@ class DabRenderer(private val maxDabs: Int) {
     private var uEdgeDarkening = -1
     private var uSquareStroke = -1
     private var uNoAntialias = -1
+    private var uIsWetMode = -1
+    private var uWetness = -1
 
     private var grainTextureId = 0
     private var grainScale = 1f
@@ -64,6 +66,11 @@ class DabRenderer(private val maxDabs: Int) {
     private var smudgeStrength = 0f
     private var smudgeLength = 0f
     var edgeDarkening = 0f
+
+    /** When true, dabs write the WET fluid buffer (RGB pigment, A = water). */
+    private var isWetMode = false
+    /** How wet a WET deposit is (0..1). Controls the fluid buffer's water channel. */
+    var wetness = 0f
 
     private var uploadedDabCount = 0
     private val blendController = BlendController()
@@ -106,6 +113,8 @@ class DabRenderer(private val maxDabs: Int) {
         uEdgeDarkening = GLES30.glGetUniformLocation(currentProgram.id, "uEdgeDarkening")
         uSquareStroke = GLES30.glGetUniformLocation(currentProgram.id, "uSquareStroke")
         uNoAntialias = GLES30.glGetUniformLocation(currentProgram.id, "uNoAntialias")
+        uIsWetMode = GLES30.glGetUniformLocation(currentProgram.id, "uIsWetMode")
+        uWetness = GLES30.glGetUniformLocation(currentProgram.id, "uWetness")
 
         check(
             uCanvasToClip >= 0 && uColorLinear >= 0 && uStrokeOpacity >= 0 &&
@@ -200,6 +209,8 @@ class DabRenderer(private val maxDabs: Int) {
         program?.release()
         program = null
         uploadedDabCount = 0
+        isWetMode = false
+        wetness = 0f
         grainTextureId = 0
         shapeTextureId = 0
         reverseShape = false
@@ -219,6 +230,14 @@ class DabRenderer(private val maxDabs: Int) {
 
     fun beginStroke() {
         uploadedDabCount = 0
+    }
+
+    fun setWetMode(enabled: Boolean) {
+        isWetMode = enabled
+    }
+
+    fun setWetness(value: Float) {
+        wetness = value.coerceIn(0f, 1f)
     }
 
     fun clearStrokeData() {
@@ -525,6 +544,8 @@ class DabRenderer(private val maxDabs: Int) {
         if (uEdgeDarkening >= 0) GLES30.glUniform1f(uEdgeDarkening, edgeDarkening)
         if (uSquareStroke >= 0) GLES30.glUniform1i(uSquareStroke, if (squareStroke) 1 else 0)
         if (uNoAntialias >= 0) GLES30.glUniform1i(uNoAntialias, if (noAntialias) 1 else 0)
+        if (uIsWetMode >= 0) GLES30.glUniform1i(uIsWetMode, if (isWetMode) 1 else 0)
+        if (uWetness >= 0) GLES30.glUniform1f(uWetness, wetness.coerceIn(0f, 1f))
 
         if (grainTextureId != 0) {
             GLES30.glActiveTexture(GLES30.GL_TEXTURE2)

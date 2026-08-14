@@ -75,7 +75,13 @@ data class WetSettings(
     val wetness: Float = 0f, 
     val spread: Float = 0f, 
     val bleed: Float = 0f,
-    val edgeDarkening: Float = 0f
+    val edgeDarkening: Float = 0f,
+    /** How strongly the live brush tip pushes existing wet paint (smear). 0..1 */
+    val advection: Float = 0f,
+    /** Pigment clumping at the wet boundary; the darker rim of a wash. 0..1 */
+    val coagulation: Float = 0f,
+    /** Water lost per second, letting thin washes dry and capping spread. 0..1 */
+    val evaporation: Float = 0f,
 )
 
 @Serializable
@@ -185,6 +191,10 @@ data class BrushSettings(
             wetness = wet.wetness.coerceIn(0f, 1f),
             spread = wet.spread.coerceIn(0f, 1f),
             bleed = wet.bleed.coerceIn(0f, 1f),
+            edgeDarkening = wet.edgeDarkening.coerceIn(0f, 1f),
+            advection = wet.advection.coerceIn(0f, 1f),
+            coagulation = wet.coagulation.coerceIn(0f, 1f),
+            evaporation = wet.evaporation.coerceIn(0f, 1f),
         )
 
         return copy(

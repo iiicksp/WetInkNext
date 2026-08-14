@@ -409,7 +409,16 @@ object BrushLibrary {
         settings = BrushSettings(
             name = "Watercolor Soft",
             category = "Painting",
-            renderMode = BrushRenderMode.STAMP,
+            renderMode = BrushRenderMode.WET,
+            wet = WetSettings(
+                wetness = 0.45f,
+                spread = 0.3f,
+                bleed = 0.55f,
+                edgeDarkening = 0.22f,
+                advection = 0.35f,
+                coagulation = 0.35f,
+                evaporation = 0.04f,
+            ),
             baseRadiusPx = 40.0f,
             opacity = 0.7f,
             flow = 0.5f,
@@ -430,7 +439,7 @@ object BrushLibrary {
             
             emissionUsesTime = false,
             
-            blendPolicy = BlendPolicy.MULTIPLY,
+            blendPolicy = BlendPolicy.NORMAL_BUILDUP,
             useTempStrokeBuffer = true,
             scatter = 0.0f,
             rotationJitter = 1.0f,
