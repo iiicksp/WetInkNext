@@ -12,12 +12,9 @@ class StrokeInputCapturer(private val camera: Camera, private val pool: InputBat
     private val tiltOut = FloatArray(2)
 
     var onSecondaryPointerDown: (() -> Unit)? = null
-
-    /** Не скрываем потери: пул кончился => сэмплы утрачены. */
     var droppedBatches = 0L
         private set
 
-    /** Cancels the one pointer currently owned by the drawing pipeline. */
     fun cancelActiveStroke(): Boolean {
         if (activePointerId < 0) return false
         activePointerId = -1
@@ -29,8 +26,6 @@ class StrokeInputCapturer(private val camera: Camera, private val pool: InputBat
             activePointerId = event.getPointerId(0)
             enqueue(event, InputAction.DOWN, 0, false)
         }
-        // Multi-touch is owned by GestureRouter. Drawing input only receives
-        // the one-pointer draw path and explicit cancellation from that router.
         MotionEvent.ACTION_POINTER_DOWN -> false
         MotionEvent.ACTION_MOVE -> {
             val i = event.findPointerIndex(activePointerId)
@@ -40,7 +35,6 @@ class StrokeInputCapturer(private val camera: Camera, private val pool: InputBat
             val i = if (event.actionMasked == MotionEvent.ACTION_UP) 0 else event.actionIndex
             if (event.getPointerId(i) != activePointerId) true else {
                 activePointerId = -1
-                // historical = true: хвост быстрого штриха больше не теряется.
                 enqueue(event, InputAction.UP, i, true)
             }
         }
@@ -48,47 +42,61 @@ class StrokeInputCapturer(private val camera: Camera, private val pool: InputBat
         else -> false
     }
 
-    private fun enqueue(event:MotionEvent, action:InputAction, index:Int, historical:Boolean):Boolean {
+    private fun enqueue(event: MotionEvent, action: InputAction, index: Int, historical: Boolean): Boolean {
         val batch = pool.acquire() ?: run { droppedBatches++; return false }
-        batch.begin(action);val t=camera.snapshot();val id=event.getPointerId(index);val tool=tool(event,index)
-        if(historical) {
-            for(h in 0 until event.historySize) {
-                t.screenToCanvas(event.getHistoricalX(index, h), event.getHistoricalY(index, h), canvasPoint)
+        batch.begin(action)
+        val transform = camera.snapshot()
+        val id = event.getPointerId(index)
+        val tool = tool(event, index)
+        if (historical) {
+            for (h in 0 until event.historySize) {
+                transform.screenToCanvas(event.getHistoricalX(index, h), event.getHistoricalY(index, h), canvasPoint)
                 stylusAxes.readTilt(event, index, h, tool, tiltOut)
                 val orientation = stylusAxes.readOrientation(event, index, h, tool)
-                if(!batch.addSample(
-                        canvasPoint[0], canvasPoint[1], pressure(event, tool, index, h),
-                        tiltOut[0], tiltOut[1], orientation,
-                        event.getHistoricalEventTime(h) * 1_000_000L, id, tool, true
-                    )) break
+                if (!batch.addSample(canvasPoint[0], canvasPoint[1], pressure(event, tool, index, h), tiltOut[0], tiltOut[1], orientation, event.getHistoricalEventTime(h) * 1_000_000L, id, tool, true)) break
             }
         }
-        t.screenToCanvas(event.getX(index), event.getY(index), canvasPoint)
+        transform.screenToCanvas(event.getX(index), event.getY(index), canvasPoint)
         stylusAxes.readTilt(event, index, -1, tool, tiltOut)
         val orientation = stylusAxes.readOrientation(event, index, -1, tool)
-        batch.addSample(
-            canvasPoint[0], canvasPoint[1], pressure(event, tool, index, -1),
-            tiltOut[0], tiltOut[1], orientation,
-            event.eventTime * 1_000_000L, id, tool, false
-        )
-        if (!queue.offer(batch)) {
-            pool.release(batch)
+        batch.addSample(canvasPoint[0], canvasPoint[1], pressure(event, tool, index, -1), tiltOut[0], tiltOut[1], orientation, event.eventTime * 1_000_000L, id, tool, false)
+        return enqueueBatch(batch)
+    }
+
+    /** Keeps terminal events alive. MOVE batches may be coalesced, but UP/CANCEL must win. */
+    private fun enqueueBatch(batch: InputBatch): Boolean {
+        if (queue.offer(batch)) return true
+        val terminal = batch.action != InputAction.MOVE
+        var evicted = false
+        while (queue.remainingCapacity() == 0) {
+            val old = queue.poll() ?: break
+            pool.release(old)
             droppedBatches++
-            if (action == InputAction.UP) {
-                enqueueEmpty(InputAction.CANCEL)
-            }
-            return false
+            evicted = true
+            if (!terminal) break
         }
-        return true
+        if (queue.offer(batch)) return true
+        pool.release(batch)
+        droppedBatches++
+        return false
     }
 
-    private fun enqueueEmpty(action:InputAction):Boolean {
+    private fun enqueueEmpty(action: InputAction): Boolean {
         val batch = pool.acquire() ?: run { droppedBatches++; return false }
-        batch.begin(action);if(!queue.offer(batch)){pool.release(batch);droppedBatches++;return false};return true }
-    private fun tool(e:MotionEvent,i:Int)=when(e.getToolType(i)){MotionEvent.TOOL_TYPE_STYLUS->PointerTool.STYLUS;MotionEvent.TOOL_TYPE_ERASER->PointerTool.ERASER;MotionEvent.TOOL_TYPE_FINGER->PointerTool.FINGER;else->PointerTool.UNKNOWN}
-    private fun pressure(e:MotionEvent,t:PointerTool,i:Int,h:Int):Float=if(t==PointerTool.FINGER||t==PointerTool.UNKNOWN) SYNTHETIC_FINGER_PRESSURE else (if(h>=0)e.getHistoricalPressure(i,h) else e.getPressure(i)).coerceIn(0f,1f)
-
-    companion object {
-        private const val SYNTHETIC_FINGER_PRESSURE = 0.62f
+        batch.begin(action)
+        return enqueueBatch(batch)
     }
+
+    private fun tool(e: MotionEvent, i: Int) = when (e.getToolType(i)) {
+        MotionEvent.TOOL_TYPE_STYLUS -> PointerTool.STYLUS
+        MotionEvent.TOOL_TYPE_ERASER -> PointerTool.ERASER
+        MotionEvent.TOOL_TYPE_FINGER -> PointerTool.FINGER
+        else -> PointerTool.UNKNOWN
+    }
+
+    private fun pressure(e: MotionEvent, t: PointerTool, i: Int, h: Int): Float =
+        if (t == PointerTool.FINGER || t == PointerTool.UNKNOWN) SYNTHETIC_FINGER_PRESSURE
+        else (if (h >= 0) e.getHistoricalPressure(i, h) else e.getPressure(i)).coerceIn(0f, 1f)
+
+    companion object { private const val SYNTHETIC_FINGER_PRESSURE = 0.62f }
 }
