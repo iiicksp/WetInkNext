@@ -101,4 +101,9 @@ class PaintLayer(
         tileResources?.resetHandles()
         created = false
     }
+
+    companion object {
+        /** Debug-only stage 3C switch; false restores the pre-tile stroke path. */
+        var useTiledStrokeMirror = true
+    }
 }

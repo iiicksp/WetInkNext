@@ -7,6 +7,7 @@ import com.wetinknext.BuildConfig
 import com.wetinknext.engine.canvas.PaintLayer
 import com.wetinknext.engine.canvas.NonBuildupStrokeRenderer
 import com.wetinknext.engine.canvas.StrokeBlitter
+import com.wetinknext.engine.canvas.TileStrokeMirror
 import com.wetinknext.engine.gl.CanvasGeometry
 import com.wetinknext.engine.gl.GlCheck
 import com.wetinknext.engine.gl.RenderTarget
@@ -48,6 +49,7 @@ class StrokeCommitter(
 
     private val readbackQueue = PboTileReadbackQueue(requestRender)
     private val pendingTransactions = ArrayDeque<PendingTransaction>()
+    private val tileMirror = TileStrokeMirror()
 
     val pendingReadbackCount: Int
         get() = pendingTransactions.size
@@ -90,6 +92,13 @@ class StrokeCommitter(
             erase = erase,
             strokeMode = strokeMode,
         )
+        logTileMirror(layer, if (PaintLayer.useTiledStrokeMirror) {
+            tileMirror.mirrorStroke(
+                layer = layer, geometry = geometry, blitter = blitter, strokeTextureId = sourceTarget.textureId,
+                dirtyBounds = dirtyBounds, canvasWidth = canvasWidth, canvasHeight = canvasHeight,
+                opacity = opacity.coerceIn(0f, 1f), erase = erase, strokeMode = strokeMode,
+            )
+        } else null)
         layer.version++
         val after = readbackQueue.issue(layer.target, dirtyBounds)
         pendingTransactions += PendingTransaction(
@@ -139,6 +148,14 @@ class StrokeCommitter(
             strokeMode = strokeMode,
             edgeDarkening = edgeDarkening,
         )
+        logTileMirror(layer, if (PaintLayer.useTiledStrokeMirror) {
+            tileMirror.mirrorNonBuildup(
+                layer = layer, geometry = geometry, renderer = blitter,
+                coverageTextureId = coverageTarget.textureId, colorLinear = colorLinear, dirtyBounds = dirtyBounds,
+                canvasWidth = canvasWidth, canvasHeight = canvasHeight, opacity = opacity, erase = erase,
+                strokeMode = strokeMode, edgeDarkening = edgeDarkening,
+            )
+        } else null)
         layer.version++
         val after = readbackQueue.issue(layer.target, dirtyBounds)
         pendingTransactions += PendingTransaction(
@@ -252,6 +269,15 @@ class StrokeCommitter(
                     "bounds=${bounds.contentToString()}",
             )
         }
+    }
+
+    private fun logTileMirror(layer: PaintLayer, report: TileStrokeMirror.Report?) {
+        if (!BuildConfig.DEBUG || report == null) return
+        Log.d(
+            TAG,
+            "stroke tiles layer=${layer.id} touched=${report.touchedTiles} " +
+                "resident=${report.residentTiles} budgetRefused=${report.budgetRefused}",
+        )
     }
 
     private companion object {

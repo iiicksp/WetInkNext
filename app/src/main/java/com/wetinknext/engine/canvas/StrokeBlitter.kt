@@ -40,11 +40,30 @@ class StrokeBlitter {
         opacity: Float,
         erase: Boolean = false,
         strokeMode: com.wetinknext.engine.brush.StrokeRenderMode = com.wetinknext.engine.brush.StrokeRenderMode.NORMAL_BUILDUP,
+    ) = blitInto(
+        target = layer, geometry = geometry, strokeTextureId = strokeTextureId,
+        canvasToClip = canvasToFbo, viewportWidth = width, viewportHeight = height,
+        canvasWidth = width, canvasHeight = height, opacity = opacity, erase = erase, strokeMode = strokeMode,
+    )
+
+    /** Blits into a full canvas target or a clipped tile target. */
+    fun blitInto(
+        target: RenderTarget,
+        geometry: CanvasGeometry,
+        strokeTextureId: Int,
+        canvasToClip: FloatArray,
+        viewportWidth: Int,
+        viewportHeight: Int,
+        canvasWidth: Int,
+        canvasHeight: Int,
+        opacity: Float,
+        erase: Boolean = false,
+        strokeMode: com.wetinknext.engine.brush.StrokeRenderMode = com.wetinknext.engine.brush.StrokeRenderMode.NORMAL_BUILDUP,
     ) {
         val p = program ?: return
         if (strokeTextureId == 0) return
-        layer.bind()
-        GLES30.glViewport(0, 0, width, height)
+        target.bind()
+        GLES30.glViewport(0, 0, viewportWidth, viewportHeight)
         GLES30.glDisable(GLES30.GL_SCISSOR_TEST)
         GLES30.glEnable(GLES30.GL_BLEND)
         GLES30.glBlendEquation(GLES30.GL_FUNC_ADD)
@@ -61,8 +80,8 @@ class StrokeBlitter {
             GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA)
         }
         p.use()
-        GLES30.glUniformMatrix4fv(uCanvasToClip, 1, false, canvasToFbo, 0)
-        GLES30.glUniform2f(uCanvasSize, width.toFloat(), height.toFloat())
+        GLES30.glUniformMatrix4fv(uCanvasToClip, 1, false, canvasToClip, 0)
+        GLES30.glUniform2f(uCanvasSize, canvasWidth.toFloat(), canvasHeight.toFloat())
         GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
         GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, strokeTextureId)
         GLES30.glUniform1i(uStrokeTex, 0)
