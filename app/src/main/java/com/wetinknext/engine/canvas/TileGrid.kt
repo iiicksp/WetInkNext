@@ -23,6 +23,10 @@ class TileGrid(
     fun contains(tx: Int, ty: Int): Boolean = tx in 0 until tilesX && ty in 0 until tilesY
     fun contains(coord: TileCoord): Boolean = contains(coord.tx, coord.ty)
 
+    /** True when this lattice already describes the given canvas. */
+    fun matches(width: Int, height: Int, tileSize: Int = this.tileSize): Boolean =
+        canvasWidth == width && canvasHeight == height && this.tileSize == tileSize
+
     fun coordAt(x: Int, y: Int): TileCoord? =
         if (x !in 0 until canvasWidth || y !in 0 until canvasHeight) null
         else TileCoord(x / tileSize, y / tileSize)

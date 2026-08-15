@@ -10,6 +10,19 @@ class PaintLayer(
     val metadata = LayerMetadata(id = id, name = name)
     val gpuTarget = RenderTarget()
 
+    /** Shared by the full-size target and future tile diagnostics. */
+    val tileLabel: String get() = "layer-$id"
+
+    /**
+     * Prepared tiled backing store. The compositor still reads [gpuTarget] in
+     * this migration stage, so merely enabling this owner allocates no tiles.
+     */
+    var tileResources: LayerTileResources? = null
+        private set
+
+    val tileGrid: TileGrid? get() = tileResources?.grid
+    val loadedTileCount: Int get() = tileResources?.loadedTileCount ?: 0
+
     /** Compatibility accessors for render code during the gradual split. */
     val target: RenderTarget get() = gpuTarget
     var name: String
@@ -40,10 +53,36 @@ class PaintLayer(
         height: Int,
     ): Boolean {
         if (created && target.width == width && target.height == height) return true
-        if (!allocator.create(target, "layer-$id", width, height)) return false
+        if (!allocator.create(target, tileLabel, width, height)) return false
         target.clear(0f, 0f, 0f, 0f)
         created = true
         return true
+    }
+
+    /**
+     * Attaches an initially empty tiled store. Repeating the call for the same
+     * canvas keeps existing resident tiles; resizing releases them first.
+     * Render/GL thread only.
+     */
+    fun enableTiledStorage(
+        allocator: LayerResourceAllocator,
+        canvasWidth: Int,
+        canvasHeight: Int,
+    ) {
+        val existing = tileResources
+        if (existing != null && existing.grid.matches(canvasWidth, canvasHeight)) return
+        existing?.releaseAll()
+        tileResources = LayerTileResources(
+            allocator = allocator,
+            grid = TileGrid(canvasWidth, canvasHeight),
+            label = tileLabel,
+        )
+    }
+
+    /** Releases resident tile textures and detaches the tiled store. */
+    fun disableTiledStorage() {
+        tileResources?.releaseAll()
+        tileResources = null
     }
 
     fun clear() {
@@ -51,7 +90,15 @@ class PaintLayer(
     }
 
     fun release(allocator: LayerResourceAllocator) {
+        disableTiledStorage()
         allocator.release(target)
+        created = false
+    }
+
+    /** Keeps the tile lattice through context loss while dropping stale GL ids. */
+    fun resetGlHandles() {
+        gpuTarget.resetHandles()
+        tileResources?.resetHandles()
         created = false
     }
 }

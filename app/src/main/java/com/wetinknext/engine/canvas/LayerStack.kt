@@ -59,6 +59,7 @@ class LayerStack {
                 check(layer.create(checkNotNull(resources), canvasWidth, canvasHeight)) {
                     "GPU budget cannot fit mandatory layer ${source.id}"
                 }
+                layer.enableTiledStorage(checkNotNull(resources), canvasWidth, canvasHeight)
                 layers += layer
                 // Tile restoration is a later persistence step. Preserve the new
                 // document's white background until a stored pixel payload is loaded.
@@ -119,6 +120,7 @@ class LayerStack {
         if (!layer.create(checkNotNull(resources), canvasWidth, canvasHeight)) {
             return null
         }
+        layer.enableTiledStorage(checkNotNull(resources), canvasWidth, canvasHeight)
         layer.isVisible = visible
         layer.isLocked = locked
         layer.opacity = opacity.coerceIn(0f, 1f)
@@ -163,7 +165,7 @@ class LayerStack {
 
     /** Resets every layer target's GL names for a dead context. */
     fun resetGlHandles() {
-        allLayers().forEach { it.target.resetHandles() }
+        allLayers().forEach { it.resetGlHandles() }
     }
 
     fun release() {
@@ -180,6 +182,7 @@ class LayerStack {
         if (!layer.create(checkNotNull(resources), canvasWidth, canvasHeight)) {
             return null
         }
+        layer.enableTiledStorage(checkNotNull(resources), canvasWidth, canvasHeight)
         nextId++
         return layer
     }
