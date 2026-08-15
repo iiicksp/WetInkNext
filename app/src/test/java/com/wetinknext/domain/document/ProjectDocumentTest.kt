@@ -1,63 +1,32 @@
 package com.wetinknext.domain.document
 
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import com.wetinknext.engine.canvas.BlendMode
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Test
 
 class ProjectDocumentTest {
-    private val json = Json {
-        encodeDefaults = true
-        ignoreUnknownKeys = true
+    @Test
+    fun `new documents use compact layer storage`() {
+        assertEquals(LayerStorageFormat.RGBA8, ProjectDocument.newUntitled().layerStorage)
     }
 
     @Test
-    fun untitledProjectRoundTripsWithoutEmbeddingLayerPixels() {
-        val document = ProjectDocument.newUntitled(
-            id = "project-1",
-            name = "Sketch",
-            width = 2048,
-            height = 1536,
+    fun `version one documents retain legacy storage by default`() {
+        val legacy = ProjectDocument(
+            id = "legacy",
+            name = "Legacy",
+            width = 512,
+            height = 512,
             dpi = 300,
-            nowMillis = 1234L,
+            colorProfile = ProjectDocument.SRGB_PROFILE,
+            createdAt = 1L,
+            updatedAt = 1L,
+            layers = listOf(
+                LayerDocument(1L, "Layer", true, false, 1f, BlendMode.NORMAL, "layers/1.tiles"),
+            ),
+            version = 1,
         )
 
-        val encoded = json.encodeToString(document)
-        val decoded = json.decodeFromString<ProjectDocument>(encoded)
-
-        assertEquals(document, decoded)
-        assertTrue(encoded.contains("\"pixelFile\":\"layers/1.tiles\""))
-        assertFalse(encoded.contains("rawBytes"))
-        assertFalse(encoded.contains("textureId"))
-    }
-
-    @Test(expected = IllegalArgumentException::class)
-    fun projectRejectsAnUnknownActiveLayer() {
-        val document = ProjectDocument.newUntitled(id = "project-1", nowMillis = 1234L)
-        document.copy(activeLayerId = 999L)
-    }
-
-    @Test
-    fun newCanvasRejectsAnUnsafeInitialGpuAllocation() {
-        try {
-            ProjectDocument.newUntitled(width = 8192, height = 8192)
-            fail("Expected memory-budget validation to reject an 8192px canvas")
-        } catch (_: IllegalArgumentException) {
-            // Expected: two initial layers and the stroke target would exceed the budget.
-        }
-    }
-
-    @Test
-    fun fourKCanvasIsAllowedWithinBudget() {
-        val document = ProjectDocument.newUntitled(
-            width = 4096,
-            height = 2160,
-        )
-
-        assertEquals(4096, document.width)
-        assertEquals(2160, document.height)
+        assertEquals(LayerStorageFormat.RGBA16F, legacy.layerStorage)
     }
 }

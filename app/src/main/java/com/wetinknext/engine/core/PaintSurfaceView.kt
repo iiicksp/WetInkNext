@@ -1,7 +1,9 @@
 package com.wetinknext.engine.core
 
 import android.content.Context
+import android.graphics.Rect
 import android.opengl.GLSurfaceView
+import android.os.Build
 import android.util.AttributeSet
 import android.view.MotionEvent
 import com.wetinknext.domain.document.ProjectDocument
@@ -94,10 +96,42 @@ class PaintSurfaceView @JvmOverloads constructor(
         restoreStoredLayerPreviews(layerPreviews)
     }
 
+    override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
+        super.onSizeChanged(width, height, oldWidth, oldHeight)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q || width <= 0 || height <= 0) return
+
+        // A painting stroke commonly begins at a canvas edge. Without this,
+        // Android/HarmonyOS can turn a left/right-edge stroke into a Back
+        // navigation gesture and destroy the editor surface mid-draw.
+        val edgeWidth = minOf(width / 2, (resources.displayMetrics.density * GESTURE_EXCLUSION_EDGE_DP).toInt())
+        systemGestureExclusionRects = listOf(
+            Rect(0, 0, edgeWidth, height),
+            Rect(width - edgeWidth, 0, width, height),
+        )
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (engineRenderer.handlesTouchOnGlThread()) {
+            // MotionEvent is owned by the UI dispatcher and may be recycled as
+            // soon as this method returns, so retain a copy for queueEvent.
+            val queuedEvent = MotionEvent.obtain(event)
+            queueEvent {
+                try {
+                    engineRenderer.onTouchEvent(queuedEvent)
+                    requestRender()
+                } finally {
+                    queuedEvent.recycle()
+                }
+            }
+            return true
+        }
         val handled = engineRenderer.onTouchEvent(event)
         if (handled) requestRender()
         return handled || super.onTouchEvent(event)
+    }
+
+    private companion object {
+        const val GESTURE_EXCLUSION_EDGE_DP = 200
     }
 
     fun requestState() = queueEvent { 
@@ -488,11 +522,11 @@ class PaintSurfaceView @JvmOverloads constructor(
         // GL objects can only be deleted while the EGL context is still current,
         // and super.onDetachedFromWindow() destroys it. Block briefly until the
         // GL thread confirms the release actually happened.
-        engineRenderer.shutdownWorkers()
         val released = java.util.concurrent.CountDownLatch(1)
         queueEvent {
             try {
                 engineRenderer.cancelActiveStroke()
+                engineRenderer.shutdownWorkers()
                 engineRenderer.releaseGlObjects()
             } finally {
                 released.countDown()

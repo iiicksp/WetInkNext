@@ -129,11 +129,13 @@ class EngineRenderer(
         canvasToFboProvider = { canvasToFboMatrix },
     )
     private var selectionMode = SelectionShape.FREEHAND
+    @Volatile
     private var selectionActive = false
     private var selectionTouchActive = false
     private val lassoPoints = java.util.ArrayList<FloatArray>(24)
     private val lassoStart = FloatArray(2)
     private val lastLassoPoint = FloatArray(2)
+    @Volatile
     private var transformActive = false
     private val transformState = TransformState()
     private val transformAffine = FloatArray(6)
@@ -340,6 +342,9 @@ class EngineRenderer(
 
     fun onTouchEvent(event: MotionEvent): Boolean =
         if (selectionActive || transformActive) onSelectionTouch(event) else gestureRouter.onTouchEvent(event)
+
+    /** Selection and transform touches read GL-owned resources and must run on the GL thread. */
+    fun handlesTouchOnGlThread(): Boolean = selectionActive || transformActive
 
     fun requestCancelFromInput() {
         cancelRequested.set(true)
@@ -847,16 +852,6 @@ class EngineRenderer(
         strokeTarget.clear(0f, 0f, 0f, 0f)
         PboReadbackProbe.verify(strokeTarget)
 
-        check(
-            targets.create(
-                target = smudgeTarget,
-                label = "smudgeTarget",
-                width = projectDocument.width,
-                height = projectDocument.height,
-                preferHalfFloat = nextCaps.supportsHalfFloatColorBuffer,
-            ),
-        ) { "GPU budget cannot fit the document smudge target" }
-        smudgeTarget.clear(0f, 0f, 0f, 0f)
         ViewTransform.buildCanvasToFbo(
             projectDocument.width.toFloat(),
             projectDocument.height.toFloat(),
@@ -1265,6 +1260,28 @@ class EngineRenderer(
         // A commit is more important than a live-composite optimisation.
         releaseStrokeCaches()
         return createCoverage()
+    }
+
+    /**
+     * Smudge is the only consumer of this full-canvas target. Keeping it alive
+     * between strokes needlessly prevents layer allocation and NON_BUILDUP
+     * (liner) commits on memory-constrained devices.
+     */
+    private fun ensureSmudgeTarget(): Boolean {
+        if (smudgeTarget.textureId != 0) return true
+        fun createSmudge() = targets.create(
+            target = smudgeTarget,
+            label = "smudgeTarget",
+            width = layerStack.canvasWidth,
+            height = layerStack.canvasHeight,
+            preferHalfFloat = caps?.supportsHalfFloatColorBuffer == true,
+        )
+        if (!createSmudge()) {
+            releaseStrokeCaches()
+            if (!createSmudge()) return false
+        }
+        smudgeTarget.clear(0f, 0f, 0f, 0f)
+        return true
     }
 
     private fun drawBackdropPattern() {
@@ -1823,9 +1840,15 @@ class EngineRenderer(
     private fun drainInput(): Int {
         var processedBatches = 0
         val startedAtNanos = System.nanoTime()
+        // Ribbon geometry is cheap to append but visibly falls behind when the
+        // generic 2 ms input budget leaves stylus MOVE batches queued.
+        val isRibbonInput = activeStrokeBrush?.renderMode == BrushRenderMode.RIBBON ||
+            brushSettings.renderMode == BrushRenderMode.RIBBON
+        val batchLimit = if (isRibbonInput) RIBBON_INPUT_BATCHES_PER_FRAME else MAX_INPUT_BATCHES_PER_FRAME
+        val timeLimitNanos = if (isRibbonInput) RIBBON_INPUT_PROCESS_NANOS else MAX_INPUT_PROCESS_NANOS
         while (
-            processedBatches < MAX_INPUT_BATCHES_PER_FRAME &&
-            System.nanoTime() - startedAtNanos < MAX_INPUT_PROCESS_NANOS
+            processedBatches < batchLimit &&
+            System.nanoTime() - startedAtNanos < timeLimitNanos
         ) {
             val batch = inputQueue.poll() ?: break
             try {
@@ -1858,7 +1881,7 @@ class EngineRenderer(
                                         setFalloff(strokeBrush.falloff)
                                         squareStroke = strokeBrush.squareStroke
                                         noAntialias = strokeBrush.noAntialias
-                                        if (strokeBrush.colorPull > 0f) {
+                                        if (strokeBrush.colorPull > 0f && ensureSmudgeTarget()) {
                                             captureSmudgeBackground()
                                             setSmudge(smudgeTarget.textureId, strokeBrush.colorPull, strokeBrush.colorPullLength)
                                         } else {
@@ -2300,6 +2323,7 @@ class EngineRenderer(
         targets.release(strokePreviewTarget)
         targets.release(strokeCoveragePreviewTarget)
         targets.release(strokeCoverageTarget)
+        targets.release(smudgeTarget)
     }
 
     /** Releases pooled batches without interpreting them during shutdown/context recreation. */
@@ -2847,8 +2871,11 @@ class EngineRenderer(
         /** Selection lasso stroke radius in canvas pixels. */
         private const val LASSO_RADIUS = 5f
         private const val MAX_INPUT_BATCHES_PER_FRAME = 6
+        /** Prioritise stylus fidelity for geometric liner/ribbon brushes. */
+        private const val RIBBON_INPUT_BATCHES_PER_FRAME = 24
         /** Protects the render budget even when one backlog batch is expensive. */
         private const val MAX_INPUT_PROCESS_NANOS = 2_000_000L
+        private const val RIBBON_INPUT_PROCESS_NANOS = 6_000_000L
         /** Emit a single aggregate timing record per second in debug builds. */
         private const val FRAME_LOG_INTERVAL_NANOS = 1_000_000_000L
         /** Per-MOVE Logcat I/O is expensive on debug tablet builds. */

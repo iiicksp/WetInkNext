@@ -407,6 +407,7 @@ fun EditorScreen(
                 transformMode = transformMode,
                 uiState = uiState,
                 selectionShapeUi = selectionShapeUi,
+                onSelectionShapeUiChange = { selectionShapeUi = it },
                 onPanelChange = { openPanel = it }
             )
         }
@@ -417,7 +418,7 @@ fun EditorScreen(
 private fun EditorPanelHost(
     panel: EditorPanel,
     theme: com.wetinknext.ui.theme.AppTheme,
-    surface: PaintSurfaceView?,
+    surface: PaintSurfaceView,
     layerState: LayerState,
     colorState: GlesColorState,
     brushColor: Color,
@@ -444,6 +445,7 @@ private fun EditorPanelHost(
     transformMode: TransformModeUi,
     uiState: EditorUiState,
     selectionShapeUi: SelectionShapeUi,
+    onSelectionShapeUiChange: (SelectionShapeUi) -> Unit,
     onPanelChange: (EditorPanel) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -485,7 +487,7 @@ private fun EditorPanelHost(
                             onSettingsChange = onStudioSettingsChange,
                             onPreviewRequest = onStudioPreviewRequest,
                             onReset = onStudioReset,
-                            onDismiss = onDismiss,
+                            onClose = onDismiss,
                         )
                     }
                 }
@@ -514,12 +516,12 @@ private fun EditorPanelHost(
                         state = layerState,
                         theme = theme,
                         onDismiss = onDismiss,
-                        onAddLayer = { surface?.addLayer() },
-                        onSelectLayer = { surface?.setActiveLayer(it) },
-                        onVisibleChange = { id, visible -> surface?.setLayerVisible(id, visible) },
-                        onOpacityChange = { id, opacity -> surface?.setLayerOpacity(id, opacity) },
-                        onDuplicateLayer = { id -> surface?.duplicateLayer(id) },
-                        onRemoveLayer = { id -> surface?.removeLayer(id) }
+                        onAddLayer = { surface.addLayer() },
+                        onSelectLayer = { surface.setActiveLayer(it) },
+                        onVisibleChange = { id, visible -> surface.setLayerVisible(id, visible) },
+                        onOpacityChange = { id, opacity -> surface.setLayerOpacity(id, opacity) },
+                        onDuplicateLayer = { id -> surface.duplicateLayer(id) },
+                        onRemoveLayer = { id -> surface.removeLayer(id) }
                     )
                 }
             }
@@ -543,7 +545,7 @@ private fun EditorPanelHost(
                         theme = theme,
                         currentShape = selectionShapeUi,
                         onShapeChange = { shape ->
-                            selectionShapeUi = shape
+                            onSelectionShapeUiChange(shape)
                             onSetSelectionShape(
                                 when (shape) {
                                     SelectionShapeUi.FREEHAND -> com.wetinknext.engine.selection.SelectionShape.FREEHAND

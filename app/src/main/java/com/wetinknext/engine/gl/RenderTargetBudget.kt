@@ -50,7 +50,10 @@ class RenderTargetBudget(
     }
 
     companion object {
-        const val DEFAULT_MAX_BYTES = 384L * 1024L * 1024L
+        // A 4096×2160 RGBA16F document layer takes about 67 MiB. 512 MiB
+        // leaves room for several editable layers plus the temporary stroke
+        // target, while still bounding allocation on mobile GPUs.
+        const val DEFAULT_MAX_BYTES = 512L * 1024L * 1024L
         private const val MEBIBYTE = 1024L * 1024L
         private const val TAG = "GpuBudget"
     }

@@ -4,6 +4,7 @@ import com.wetinknext.engine.core.Camera
 import com.wetinknext.engine.gl.BudgetedTargets
 import com.wetinknext.engine.gl.GlCaps
 import com.wetinknext.domain.document.ProjectDocument
+import com.wetinknext.domain.document.LayerStorageFormat
 
 /**
  * Render-thread-owned ordered collection of document layers.
@@ -14,8 +15,7 @@ class LayerStack {
 
     private val layers = mutableListOf<PaintLayer>()
     private var nextId = 1L
-    private var documentUsesHalfFloat = false
-    private var targetOwner: BudgetedTargets? = null
+    private var resources: LayerResourceAllocator? = null
 
     var activeLayerId: Long = NO_LAYER
         private set
@@ -37,10 +37,15 @@ class LayerStack {
     /** Creates the runtime stack from persisted layer metadata. */
     fun create(caps: GlCaps, document: ProjectDocument, targets: BudgetedTargets) {
         release()
-        targetOwner = targets
+        resources = LayerResourceAllocator(
+            targets = targets,
+            useHalfFloat = document.layerStorage == LayerStorageFormat.RGBA16F,
+        )
         canvasWidth = document.width
         canvasHeight = document.height
-        documentUsesHalfFloat = caps.supportsHalfFloatColorBuffer
+        // The persisted payload decides the document texture format.  Older
+        // RGBA16F projects therefore remain readable; all new projects use
+        // compact RGBA8 layers regardless of device capabilities.
 
         try {
             document.layers.forEachIndexed { index, source ->
@@ -51,7 +56,7 @@ class LayerStack {
                     it.blendMode = source.blendMode
                     it.version = source.thumbnailVersion
                 }
-                check(layer.create(targets, canvasWidth, canvasHeight, documentUsesHalfFloat)) {
+                check(layer.create(checkNotNull(resources), canvasWidth, canvasHeight)) {
                     "GPU budget cannot fit mandatory layer ${source.id}"
                 }
                 layers += layer
@@ -74,25 +79,25 @@ class LayerStack {
     fun create(caps: GlCaps, width: Int, height: Int, targets: BudgetedTargets) {
         require(width > 0 && height > 0)
         release()
-        targetOwner = targets
+        resources = LayerResourceAllocator(targets, useHalfFloat = false)
         canvasWidth = width
         canvasHeight = height
-        documentUsesHalfFloat = caps.supportsHalfFloatColorBuffer
-
-        val background = checkNotNull(newLayer("Фон", documentUsesHalfFloat)).also {
+        // This overload creates a new, unsaved document.  Default to compact
+        // RGBA8 storage; half-float targets are reserved for transient tools.
+        val background = checkNotNull(newLayer("Фон")).also {
             it.isLocked = true
             it.target.clear(1f, 1f, 1f, 1f)
         }
         layers += background
 
-        val drawing = checkNotNull(newLayer("Слой 1", documentUsesHalfFloat))
+        val drawing = checkNotNull(newLayer("Слой 1"))
         layers += drawing
         activeLayerId = drawing.id
     }
 
     fun addLayer(name: String, insertAt: Int = layers.size): PaintLayer? {
         check(canvasWidth > 0 && canvasHeight > 0) { "LayerStack has not been created" }
-        val layer = newLayer(name, documentUsesHalfFloat) ?: return null
+        val layer = newLayer(name) ?: return null
         layers.add(insertAt.coerceIn(0, layers.size), layer)
         activeLayerId = layer.id
         return layer
@@ -111,7 +116,7 @@ class LayerStack {
     ): PaintLayer? {
         if (findLayerById(id) != null) return null
         val layer = PaintLayer(id, name)
-        if (!layer.create(checkNotNull(targetOwner), canvasWidth, canvasHeight, documentUsesHalfFloat)) {
+        if (!layer.create(checkNotNull(resources), canvasWidth, canvasHeight)) {
             return null
         }
         layer.isVisible = visible
@@ -133,7 +138,7 @@ class LayerStack {
         if (layer.isLocked) return null
 
         layers.removeAt(index)
-        layer.release(checkNotNull(targetOwner))
+        layer.release(checkNotNull(resources))
         if (activeLayerId == id) {
             activeLayerId = layers[index.coerceAtMost(layers.lastIndex)].id
         }
@@ -162,18 +167,17 @@ class LayerStack {
     }
 
     fun release() {
-        targetOwner?.let { targets -> layers.forEach { it.release(targets) } }
+        resources?.let { allocator -> layers.forEach { it.release(allocator) } }
         layers.clear()
         activeLayerId = NO_LAYER
         canvasWidth = 0
         canvasHeight = 0
-        documentUsesHalfFloat = false
-        targetOwner = null
+        resources = null
     }
 
-    private fun newLayer(name: String, useHalfFloat: Boolean): PaintLayer? {
+    private fun newLayer(name: String): PaintLayer? {
         val layer = PaintLayer(nextId, name)
-        if (!layer.create(checkNotNull(targetOwner), canvasWidth, canvasHeight, useHalfFloat)) {
+        if (!layer.create(checkNotNull(resources), canvasWidth, canvasHeight)) {
             return null
         }
         nextId++

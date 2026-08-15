@@ -27,6 +27,12 @@ data class ProjectDocument(
     /** Changes only when the project-wide preview is rebuilt. */
     val thumbnailVersion: Long = 0L,
     val version: Int = CURRENT_VERSION,
+    /**
+     * Persistent pixel precision for document layers.  This is deliberately
+     * document metadata, not a capability chosen by the current GPU: a saved
+     * project must reopen with a texture format that matches its tile payloads.
+     */
+    val layerStorage: LayerStorageFormat = if (version >= 2) LayerStorageFormat.RGBA8 else LayerStorageFormat.RGBA16F,
 ) {
     init {
         require(id.isNotBlank()) { "Project id must not be blank" }
@@ -48,7 +54,7 @@ data class ProjectDocument(
     fun withUpdatedTimestamp(nowMillis: Long): ProjectDocument = copy(updatedAt = nowMillis)
 
     companion object {
-        const val CURRENT_VERSION = 1
+        const val CURRENT_VERSION = 2
         const val DEFAULT_WIDTH = 1500
         const val DEFAULT_HEIGHT = 2000
         const val DEFAULT_DPI = 300
@@ -116,8 +122,10 @@ data class ProjectDocument(
             require(height in MIN_DIMENSION..MAX_DIMENSION) { "Canvas height must be within $MIN_DIMENSION..$MAX_DIMENSION px" }
             require(dpi in MIN_DPI..MAX_DPI) { "Canvas DPI must be within $MIN_DPI..$MAX_DPI" }
             require(normalizeColorProfile(colorProfile) in SUPPORTED_COLOR_PROFILES) { "Unsupported color profile: $colorProfile" }
+            // New documents keep long-lived paint layers in RGBA8. HDR/half
+            // float remains a temporary working format for effects that need it.
             val documentBytes =
-                width.toLong() * height * DOCUMENT_TARGET_COUNT * RGBA16F_BYTES_PER_PIXEL
+                width.toLong() * height * DOCUMENT_TARGET_COUNT * RGBA8_BYTES_PER_PIXEL
             val screenBytes =
                 ASSUMED_SCREEN_PIXELS * SCREEN_TARGET_COUNT * RGBA8_BYTES_PER_PIXEL
             val estimatedBytes = documentBytes + screenBytes
@@ -138,6 +146,15 @@ data class ProjectDocument(
         private const val BACKGROUND_LAYER_ID = 1L
         private const val FIRST_PAINT_LAYER_ID = 2L
     }
+}
+
+/** Storage format for persistent document layers and their tile payloads. */
+@Serializable
+enum class LayerStorageFormat {
+    /** Legacy projects written before the storage migration. */
+    RGBA16F,
+    /** Default for new projects: half the VRAM of RGBA16F. */
+    RGBA8,
 }
 
 @Serializable
