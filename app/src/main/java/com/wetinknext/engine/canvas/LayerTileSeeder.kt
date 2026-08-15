@@ -11,19 +11,33 @@ import com.wetinknext.engine.undo.TileCoord
 class LayerTileSeeder {
     fun seed(source: RenderTarget, grid: TileGrid, resources: LayerTileResources): Boolean {
         GlCheck.checkOnGlThread()
-        if (source.framebufferId == 0 || source.width != grid.canvasWidth || source.height != grid.canvasHeight) return false
-        val created = ArrayList<TileCoord>()
+        if (source.framebufferId == 0 || source.width != grid.canvasWidth || source.height != grid.canvasHeight) {
+            return false
+        }
+
+        val createdThisCall = ArrayList<TileCoord>()
         val previousDraw = IntArray(1)
         val previousRead = IntArray(1)
         GLES30.glGetIntegerv(GLES30.GL_DRAW_FRAMEBUFFER_BINDING, previousDraw, 0)
         GLES30.glGetIntegerv(GLES30.GL_READ_FRAMEBUFFER_BINDING, previousRead, 0)
-        return try {
+
+        var succeeded = false
+        try {
             for (coord in grid.allTiles()) {
-                val tile = resources.obtain(coord) ?: run {
-                    if (BuildConfig.DEBUG) Log.w(TAG, "GPU budget refused seed tile (${coord.tx},${coord.ty})")
-                    return fail(resources, created)
+                val wasResident = resources.peek(coord) != null
+                val tile = resources.obtain(coord)
+                if (tile == null) {
+                    if (BuildConfig.DEBUG) {
+                        Log.w(
+                            TAG,
+                            "GPU budget refused seed tile (${coord.tx},${coord.ty}); " +
+                                "created=${createdThisCall.size}",
+                        )
+                    }
+                    return false
                 }
-                created += coord
+                if (!wasResident) createdThisCall += coord
+
                 val left = grid.tileLeft(coord.tx)
                 val top = grid.tileTop(coord.ty)
                 val width = grid.tileWidth(coord.tx)
@@ -37,18 +51,20 @@ class LayerTileSeeder {
                 )
                 GlCheck.noError("seed tile")
             }
-            GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, previousRead[0])
-            GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, previousDraw[0])
-            true
+            succeeded = true
+            return true
         } catch (error: Throwable) {
             if (BuildConfig.DEBUG) Log.w(TAG, "tile seeding failed", error)
-            fail(resources, created)
+            return false
+        } finally {
+            // This must run on budget refusal and GL errors too. Leaving the
+            // last tile bound corrupts the next render pass's framebuffer state.
+            GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, previousRead[0])
+            GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, previousDraw[0])
+            if (!succeeded) {
+                createdThisCall.forEach(resources::release)
+            }
         }
-    }
-
-    private fun fail(resources: LayerTileResources, created: List<TileCoord>): Boolean {
-        created.forEach(resources::release)
-        return false
     }
 
     private companion object { const val TAG = "TileSeeder" }
