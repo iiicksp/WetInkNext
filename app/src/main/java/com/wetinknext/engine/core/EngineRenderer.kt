@@ -2319,9 +2319,10 @@ class EngineRenderer(
         if (strokeTarget.framebufferId != 0) {
             strokeTarget.clear(0f, 0f, 0f, 0f)
         }
-        releaseStrokeCaches()
-        targets.release(strokePreviewTarget)
-        targets.release(strokeCoveragePreviewTarget)
+        // Screen-sized preview and composite caches are reused by the next
+        // stroke. Releasing them here forced 19 MiB GPU allocations every
+        // frame/stroke on the tablet; onSurfaceChanged and releaseGlObjects
+        // remain their lifecycle owners.
         targets.release(strokeCoverageTarget)
         targets.release(smudgeTarget)
     }
